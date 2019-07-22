@@ -171,7 +171,14 @@ void TrainingApplication::update()
 	size_t pP2Combo = (0x16115E3E - 0x161151C0) - s_calibrationSequenceOffset;
 	size_t pP1Attacking = (0x161188B7 - 0x161181C0) - s_calibrationSequenceOffset;*/
 
-	if (ImGui::BeginMainMenuBar())
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+	ImGui::Begin("Body", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoDecoration);
+	ImGui::PopStyleVar(2);
+	ImGui::SetWindowPos(ImVec2(0.f, 0.f));
+	ImGui::SetWindowSize(ImGui::GetIO().DisplaySize);
+
+	if (ImGui::BeginMenuBar())
 	{
 		if (ImGui::BeginMenu("Misc"))
 		{
@@ -198,7 +205,7 @@ void TrainingApplication::update()
 				_dettachFromFBA();
 			}
 		}
-		ImGui::EndMainMenuBar();
+		ImGui::EndMenuBar();
 	}
 
 	if (_isAttachedToFBA())
@@ -225,6 +232,10 @@ void TrainingApplication::update()
 		ImGui::Text("P2Combo: %d", _readByte(memoryMap::P2Combo));
 
 		ImGui::Text("P1Attacking: %d", _readByte(memoryMap::P1Attacking));
+	}
+	else
+	{
+		ImGui::Text("zob");
 	}
 
 	if (m_showDemoWindow)
@@ -299,6 +310,8 @@ void TrainingApplication::update()
 			ImGui::End();
 		}
 	}
+
+	ImGui::End();
 }
 
 void TrainingApplication::shutdown()
