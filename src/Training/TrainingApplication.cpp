@@ -142,35 +142,20 @@ size_t FindRAMStartAddress(HANDLE _processHandle)
 	return RAMStartAddress;
 }
 
+static char* m_memoryBuffer = nullptr;
+static char* m_memoryMapData = nullptr;
+static size_t m_memoryMapSize = 0;
+bool m_showMemoryMap = true;
+
 void TrainingApplication::initialize()
 {
+	m_memoryBuffer = (char*)malloc(s_maxAddress);
+
 	_attachToFBA();
 }
 
 void TrainingApplication::update()
 {
-	/*size_t pFrame = (0x160A8720 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pTimer = (0x160B1B94 - 0x161091C0);
-	size_t pP1Health = (0x16109528 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP2Health = (0x161099C0 - 0x161091C0) -s_calibrationSequenceOffset;
-	size_t pP1Stun = (0x16109E1E - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP2Stun = (0x16109E32 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP1Pos = (0x161094F2 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP2Pos = (0x1610998A - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP1Super = (0x16109DD6 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP2Super = (0x16109E02 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP1MetersA = (0x160C8EC8 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP1MetersB = (0x16109DDC - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP2MetersA = (0x160C8EFC - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP2MetersB = (0x16109E08 - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP1MaxMeters = (0x16109DDE - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP2MaxMeters = (0x16109E0A - 0x161091C0) - s_calibrationSequenceOffset;
-	size_t pP1Height = (0x161160DC - 0x161151C0) - s_calibrationSequenceOffset;
-	size_t pP2Height = (0x161163DC - 0x161151C0) - s_calibrationSequenceOffset;
-	size_t pP1Combo = (0x16115EE6 - 0x161151C0) - s_calibrationSequenceOffset;
-	size_t pP2Combo = (0x16115E3E - 0x161151C0) - s_calibrationSequenceOffset;
-	size_t pP1Attacking = (0x161188B7 - 0x161181C0) - s_calibrationSequenceOffset;*/
-
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 	ImGui::Begin("Body", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoDecoration);
@@ -178,11 +163,14 @@ void TrainingApplication::update()
 	ImGui::SetWindowPos(ImVec2(0.f, 0.f));
 	ImGui::SetWindowSize(ImGui::GetIO().DisplaySize);
 
+	// BEGIN
+
 	if (ImGui::BeginMenuBar())
 	{
 		if (ImGui::BeginMenu("Misc"))
 		{
 			ImGui::MenuItem("Show Memory Debugger", "", &m_showMemoryDebugger);
+			ImGui::MenuItem("Show Memory Map", "", &m_showMemoryMap);
 			ImGui::MenuItem("Show ImGui Demo Window", "", &m_showDemoWindow);
 			ImGui::EndMenu();
 		}
@@ -311,6 +299,30 @@ void TrainingApplication::update()
 		}
 	}
 
+	SIZE_T bytesRead = 0;
+	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
+	ImGui::Begin("Memory Map", &m_showMemoryMap);
+	ImGui::Text("%llu", bytesRead/8);
+	ImVec2 windowSize = ImGui::GetWindowSize();
+	if (windowSize.x * windowSize.y > m_memoryMapSize)
+	{
+		m_memoryMapSize = (unsigned)windowSize.x * (unsigned)windowSize.y;
+		m_memoryMapData = (char*)realloc(m_memoryMapData, m_memoryMapSize);
+	}
+	memset(m_memoryMapData, 0, m_memoryMapSize);
+	long long unsigned* u64Buffer = (long long unsigned*)m_memoryBuffer;
+	size_t increment = (bytesRead / 8) / m_memoryMapSize;
+	for (size_t i = 0; i < (bytesRead / 8); ++i)
+	{
+		size_t pixelIndex = i / increment;
+		m_memoryMapData[pixelIndex] = m_memoryMapData[pixelIndex] & u64Buffer[i];
+	}
+
+	ImGui::Text("%.1f, %.1f", windowSize.x, windowSize.y);
+	ImGui::End();
+	
+
+	// END
 	ImGui::End();
 }
 
