@@ -7,9 +7,41 @@
 
 using namespace System;
 using namespace System::Diagnostics;
+using namespace System::Threading;
 
 char s_calibrationSequence[] = { 0x78, 0x00, 0x79, 0x00, 0x76, 0x00 };
 size_t s_calibrationSequenceOffset = 0x160B1B94 - 0x161091C0 - 0x02011377;
+
+uint32_t s_timeOutTime = 1000;
+
+enum class GlobalInputFlags : uint32_t
+{
+	GlobalInputFlags_Up = 0x0100,
+	GlobalInputFlags_Down = 0x0200,
+	GlobalInputFlags_Left = 0x0400,
+	GlobalInputFlags_Right = 0x0800,
+	GlobalInputFlags_LP = 0x1000,
+	GlobalInputFlags_MP = 0x2000,
+	GlobalInputFlags_HP = 0x4000,
+	GlobalInputFlags_LK = 0x8000,
+	GlobalInputFlags_MK = 0x0001,
+	GlobalInputFlags_HK = 0x0002,
+	GlobalInputFlags_Start = 0x0010
+};
+
+enum class GameInputFlags : uint32_t
+{
+	GameInputFlags_Up = 0x0001,
+	GameInputFlags_Down = 0x0002,
+	GameInputFlags_Left = 0x0004,
+	GameInputFlags_Right = 0x0008,
+	GameInputFlags_LP = 0x0010,
+	GameInputFlags_MP = 0x0020,
+	GameInputFlags_HP = 0x0040,
+	GameInputFlags_LK = 0x0100,
+	GameInputFlags_MK = 0x0200,
+	GameInputFlags_HK = 0x0400
+};
 
 namespace memoryMap
 {
@@ -38,21 +70,6 @@ namespace memoryMap
 
 
 size_t s_maxAddress = 0x02080000;
-
-bool m_showMemoryDebugger = true;
-size_t m_debugAddress = 0;
-
-void _IncrementDebugAddress(long long int _increment)
-{
-	if (_increment < 0 && (_increment * -1) > m_debugAddress)
-		m_debugAddress = 0;
-	else
-	{
-		m_debugAddress += _increment;
-		if (m_debugAddress > s_maxAddress)
-			m_debugAddress = s_maxAddress;
-	}
-}
 
 HANDLE FindFBAProcessHandle()
 {
@@ -90,7 +107,7 @@ size_t FindRAMStartAddress(HANDLE _processHandle)
 
 	MEMORY_BASIC_INFORMATION mbi;
 	size_t bufferSize = 0x10000000;
-	char* buffer = (char*)malloc(bufferSize);
+	uint8_t* buffer = (uint8_t*)malloc(bufferSize);
 
 	size_t RAMStartAddress = 0;
 
@@ -133,10 +150,8 @@ size_t FindRAMStartAddress(HANDLE _processHandle)
 			}
 		}
 
-		minAddress = (char*)minAddress + mbi.RegionSize;
+		minAddress = (uint8_t*)minAddress + mbi.RegionSize;
 	}
-
-
 	free(buffer);
 
 	return RAMStartAddress;
@@ -145,13 +160,55 @@ size_t FindRAMStartAddress(HANDLE _processHandle)
 static char* m_memoryBuffer = nullptr;
 static char* m_memoryMapData = nullptr;
 static size_t m_memoryMapSize = 0;
-bool m_showMemoryMap = true;
+static bool m_showMemoryMap = true;
+
+static bool m_isRecording = false;
+static size_t m_memorySamplesCount = 0;
+static size_t m_memorySamplesSize = 0;
+static char** m_memorySamples = nullptr;
+
+void TrainingThreadHelper::watchFrameThreadMain()
+{
+	application->watchFrameChange();
+}
 
 void TrainingApplication::initialize()
 {
 	m_memoryBuffer = (char*)malloc(s_maxAddress);
 
+	m_threads = gcnew TrainingThreadHelper();
+	m_threads->watchFrameThread = gcnew Thread(gcnew ThreadStart(m_threads, &TrainingThreadHelper::watchFrameThreadMain));
+	m_threads->watchFrameThread->Name = "WatchFrame";
+	m_threads->lock = gcnew ReaderWriterLock();
+	m_threads->application = this;
+
 	_attachToFBA();
+}
+
+
+void TrainingApplication::shutdown()
+{
+	_dettachFromFBA();
+
+	m_threads = nullptr;
+
+	free(m_memoryBuffer);
+	m_memoryBuffer = nullptr;
+}
+
+static uint16_t m_p1GlobalInputFlags;
+static uint16_t m_p1GameInputFlags;
+static bool m_p1CoinDown;
+
+void TrainingApplication::onFrameBegin()
+{
+	m_threads->lock->AcquireWriterLock(s_timeOutTime);
+	{
+		m_p1GlobalInputFlags = _readUnsignedInt(0x0206AA90, 2);
+		m_p1GameInputFlags = _readUnsignedInt(0x0202564B, 2);
+		m_p1CoinDown = _readByte(0x0206AABB);
+	}
+	m_threads->lock->ReleaseWriterLock();
 }
 
 void TrainingApplication::update()
@@ -198,6 +255,8 @@ void TrainingApplication::update()
 
 	if (_isAttachedToFBA())
 	{
+		m_threads->lock->AcquireReaderLock(s_timeOutTime);
+
 		ImGui::Text("RAM starting address: 0x%08x", m_ramStartingAddress);
 		ImGui::Text("Frame: %d", _readUnsignedInt(memoryMap::frameNumber, 4));
 		ImGui::Text("Timer: %d", _readByte(memoryMap::timer));
@@ -220,6 +279,12 @@ void TrainingApplication::update()
 		ImGui::Text("P2Combo: %d", _readByte(memoryMap::P2Combo));
 
 		ImGui::Text("P1Attacking: %d", _readByte(memoryMap::P1Attacking));
+
+		ImGui::Text("P1 Global Input: %04X", m_p1GlobalInputFlags);
+		ImGui::Text("P1 Game Input: %04X", m_p1GameInputFlags);
+		ImGui::Text("P1 Coin Down: %d", m_p1CoinDown);
+
+		m_threads->lock->ReleaseReaderLock();
 	}
 	else
 	{
@@ -247,20 +312,20 @@ void TrainingApplication::update()
 			float mouseWheel = ImGui::GetIO().MouseWheel;
 			if (mouseWheel < 0.f)
 			{
-				_IncrementDebugAddress(0x10);
+				_incrementDebugAddress(0x10);
 			}
 			else if (mouseWheel > 0.f)
 			{
-				_IncrementDebugAddress(-0x10);
+				_incrementDebugAddress(-0x10);
 			}
 
 			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
 			{
-				_IncrementDebugAddress(-(int)rowCount);
+				_incrementDebugAddress(-(int)rowCount);
 			}
 			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
 			{
-				_IncrementDebugAddress((int)rowCount);
+				_incrementDebugAddress((int)rowCount);
 			}
 
 			char addressBuffer[9] = {};
@@ -282,7 +347,7 @@ void TrainingApplication::update()
 				ImGui::SameLine(0.f, 20.f);
 				for (size_t col = 0; col < rowSize; ++col)
 				{
-					ImGui::Text("%02X", (unsigned)(unsigned char)(memoryBuffer[row * 0x10 + col]));
+					ImGui::Text("%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
 
 					if (col == 7)
 					{
@@ -302,33 +367,75 @@ void TrainingApplication::update()
 	SIZE_T bytesRead = 0;
 	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
 	ImGui::Begin("Memory Map", &m_showMemoryMap);
-	ImGui::Text("%llu", bytesRead/8);
-	ImVec2 windowSize = ImGui::GetWindowSize();
-	if (windowSize.x * windowSize.y > m_memoryMapSize)
+	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.f, 0.f, 0.f, 1.f));
+	if (!m_isRecording)
 	{
-		m_memoryMapSize = (unsigned)windowSize.x * (unsigned)windowSize.y;
+		if (ImGui::Button("Record"))
+		{
+			m_isRecording = true;
+		}
+	}
+	else
+	{
+		if (ImGui::Button("Stop Recording"))
+		{
+			m_isRecording = false;
+		}
+	}
+	ImGui::PopStyleColor(1);
+	ImGui::Text("%llu", bytesRead/8);
+	ImGui::Separator();
+
+	/*ImVec2 drawStart = ImGui::GetCursorScreenPos();
+	ImVec2 drawSize = ImGui::GetContentRegionAvail();
+	size_t minMemoryMapSize = (long long unsigned)drawSize.x * (long long unsigned)drawSize.y;
+	if (minMemoryMapSize > m_memoryMapSize)
+	{
+		m_memoryMapSize = minMemoryMapSize;
 		m_memoryMapData = (char*)realloc(m_memoryMapData, m_memoryMapSize);
 	}
 	memset(m_memoryMapData, 0, m_memoryMapSize);
+
 	long long unsigned* u64Buffer = (long long unsigned*)m_memoryBuffer;
-	size_t increment = (bytesRead / 8) / m_memoryMapSize;
-	for (size_t i = 0; i < (bytesRead / 8); ++i)
+	float increment = float(bytesRead / sizeof(long long unsigned)) / float(minMemoryMapSize);
+	for (size_t i = 0; i < (bytesRead / sizeof(long long unsigned)); ++i)
 	{
-		size_t pixelIndex = i / increment;
+		size_t pixelIndex = i / std::ceil(increment);
 		m_memoryMapData[pixelIndex] = m_memoryMapData[pixelIndex] & u64Buffer[i];
 	}
 
-	ImGui::Text("%.1f, %.1f", windowSize.x, windowSize.y);
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	for (size_t i = 0; i < minMemoryMapSize; ++i)
+	{
+		ImColor col = m_memoryMapData[i] ? ImColor(1.f, 1.f, 1.f, 1.f) : ImColor(1.f, 1.f, 1.f, .3f);
+		ImVec2 pixelStart = ImVec2(drawStart.x + i % (long long unsigned)drawSize.x, drawStart.y + i / (long long unsigned)drawSize.x);
+		ImVec2 pixelEnd = ImVec2(pixelStart.x + 1, pixelStart.y + 1);
+		drawList->AddRectFilled(pixelStart, pixelEnd, col);
+	}*/
+
 	ImGui::End();
+
+	if (m_isRecording)
+	{
+		
+	}
 	
 
 	// END
 	ImGui::End();
 }
 
-void TrainingApplication::shutdown()
+void TrainingApplication::watchFrameChange()
 {
-
+	while (_isAttachedToFBA())
+	{
+		uint32_t currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
+		if (currentFrame != m_currentFrame)
+		{
+			m_currentFrame = currentFrame;
+			onFrameBegin();
+		}
+	}
 }
 
 bool TrainingApplication::_isAttachedToFBA()
@@ -354,6 +461,9 @@ void TrainingApplication::_attachToFBA()
 		printf("Error: Failed to find RAM starting address.\n");
 		return;
 	}
+
+	m_currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
+	m_threads->watchFrameThread->Start();
 }
 
 void TrainingApplication::_dettachFromFBA()
@@ -361,8 +471,10 @@ void TrainingApplication::_dettachFromFBA()
 	if (!_isAttachedToFBA())
 		return;
 
-	m_FBAProcessHandle = nullptr;
 	m_ramStartingAddress = 0;
+	m_FBAProcessHandle = nullptr;
+
+	m_threads->watchFrameThread->Join();
 }
 
 void TrainingApplication::_writeByte(size_t _address, char _byte)
@@ -377,6 +489,18 @@ char TrainingApplication::_readByte(size_t _address)
 	char byte = 0;
 	ReadProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + _address), &byte, 1, nullptr);
 	return byte;
+}
+
+void TrainingApplication::_incrementDebugAddress(int64_t _increment)
+{
+	if (_increment < 0 && (_increment * -1) > m_debugAddress)
+		m_debugAddress = 0;
+	else
+	{
+		m_debugAddress += _increment;
+		if (m_debugAddress > s_maxAddress)
+			m_debugAddress = s_maxAddress;
+	}
 }
 
 long long unsigned int TrainingApplication::_readUnsignedInt(size_t _address, size_t _size)
