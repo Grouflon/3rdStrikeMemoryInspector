@@ -1,0 +1,3 @@
+[submodule "extern/mirror"]
+	path = extern/mirror
+	url = https://github.com/Grouflon/mirror.git
