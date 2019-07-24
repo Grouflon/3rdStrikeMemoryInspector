@@ -1,7 +1,7 @@
 #include "TrainingApplication.h"
 
 #include <windows.h>
-#include <ImGui\imgui.h>
+#include <imgui.h>
 #include <cstdio>
 #include <algorithm>
 
@@ -200,6 +200,10 @@ static uint16_t m_p1GlobalInputFlags;
 static uint16_t m_p1GameInputFlags;
 static bool m_p1CoinDown;
 
+static uint16_t m_p2GlobalInputFlags;
+static uint16_t m_p2GameInputFlags;
+static bool m_p2CoinDown;
+
 void TrainingApplication::onFrameBegin()
 {
 	m_threads->lock->AcquireWriterLock(s_timeOutTime);
@@ -207,6 +211,10 @@ void TrainingApplication::onFrameBegin()
 		m_p1GlobalInputFlags = _readUnsignedInt(0x0206AA90, 2);
 		m_p1GameInputFlags = _readUnsignedInt(0x0202564B, 2);
 		m_p1CoinDown = _readByte(0x0206AABB);
+		
+		m_p2GlobalInputFlags = _readUnsignedInt(0x0206AA93, 2);
+		m_p2GameInputFlags = _readUnsignedInt(0x02025685, 2);
+		m_p2CoinDown = _readByte(0x00206AAC1);
 	}
 	m_threads->lock->ReleaseWriterLock();
 }
@@ -283,6 +291,10 @@ void TrainingApplication::update()
 		ImGui::Text("P1 Global Input: %04X", m_p1GlobalInputFlags);
 		ImGui::Text("P1 Game Input: %04X", m_p1GameInputFlags);
 		ImGui::Text("P1 Coin Down: %d", m_p1CoinDown);
+
+		ImGui::Text("P2 Global Input: %04X", m_p2GlobalInputFlags);
+		ImGui::Text("P2 Game Input: %04X", m_p2GameInputFlags);
+		ImGui::Text("P2 Coin Down: %d", m_p2CoinDown);
 
 		m_threads->lock->ReleaseReaderLock();
 	}

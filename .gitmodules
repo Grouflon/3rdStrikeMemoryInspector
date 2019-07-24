@@ -1,3 +1,6 @@
 [submodule "extern/mirror"]
 	path = extern/mirror
 	url = https://github.com/Grouflon/mirror.git
+[submodule "extern/imgui"]
+	path = extern/imgui
+	url = https://github.com/ocornut/imgui.git

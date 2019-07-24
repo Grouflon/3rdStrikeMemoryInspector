@@ -1,14 +1,14 @@
 // 3rdTraining.cpp : fichier projet principal.
 
-#include <ImGui\imgui.h>
-#include <ImGui\imgui_impl_dx9.h>
-#include <ImGui\imgui_impl_win32.h>
+#include <imgui.h>
+#include <examples/imgui_impl_dx9.h>
+#include <examples/imgui_impl_win32.h>
 #include <d3d9.h>
 #define DIRECTINPUT_VERSION 0x0800
 #include <dinput.h>
 #include <tchar.h>
 
-#include <Training/TrainingApplication.h>
+#include <TrainingApplication.h>
 
 // Data
 static LPDIRECT3D9              g_pD3D = NULL;
@@ -78,6 +78,18 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	}
 	return ::DefWindowProc(hWnd, msg, wParam, lParam);
 }
+
+struct Test
+{
+	float v1;
+	float v2;
+
+	MIRROR(Test)
+	(
+		M_MEMBER(v1);
+		M_MEMBER(v2);
+	);
+};
 
 int main(array<System::String ^> ^args)
 {
