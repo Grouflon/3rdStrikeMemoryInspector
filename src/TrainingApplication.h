@@ -19,13 +19,17 @@ public:
 	TrainingApplication* application;
 };
 
-struct TrainingApplicationOptions
+struct TrainingApplicationData
 {
 	bool autoAttach = true;
+	bool showMemoryDebugger = false;
+	bool showMemoryMap = false;
 
-	MIRROR_CLASS(TrainingApplicationOptions)
+	MIRROR_CLASS(TrainingApplicationData)
 	(
 		MIRROR_MEMBER(autoAttach)
+		MIRROR_MEMBER(showMemoryDebugger)
+		MIRROR_MEMBER(showMemoryMap)
 	)
 };
 
@@ -52,8 +56,8 @@ private:
 
 	bool _findFBAProcessHandle();
 
-	void _saveData();
-	void _loadData();
+	void _saveApplicationData();
+	void _loadApplicationData();
 
 	gcroot<System::Diagnostics::Process^> m_FBAProcess = nullptr;
 	HANDLE m_FBAProcessHandle = nullptr;
@@ -62,14 +66,12 @@ private:
 	uint32_t m_currentFrame = 0;
 
 	bool m_showDemoWindow = false;
-	bool m_showMemoryDebugger = false;
-	bool m_showMemoryMap = false;
 
 	size_t m_debugAddress = 0;
 
 	gcroot<TrainingThreadHelper^> m_threads;
 
-	TrainingApplicationOptions m_options;
+	TrainingApplicationData m_applicationData;
 
 	mirror::BinarySerializer m_dataSerializer;
 };

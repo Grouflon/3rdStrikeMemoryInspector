@@ -11,7 +11,7 @@ using namespace System;
 using namespace System::Diagnostics;
 using namespace System::Threading;
 
-static const char* s_saveFileName = "save.data";
+static const char* s_applicationDataFileName = "application.data";
 
 char s_calibrationSequence[] = { 0x78, 0x00, 0x79, 0x00, 0x76, 0x00 };
 size_t s_calibrationSequenceOffset = 0x160B1B94 - 0x161091C0 - 0x02011377;
@@ -72,7 +72,7 @@ namespace memoryMap
 	static size_t P1Attacking = 0x0206909a;
 }
 
-#define IMGUI_AUTOSAVE(exp) if (exp) { _saveData(); }
+#define IMGUI_APPDATA(exp) if (exp) { _saveApplicationData(); }
 
 
 size_t s_maxAddress = 0x02080000;
@@ -154,7 +154,7 @@ void TrainingApplication::initialize()
 {
 	m_memoryBuffer = (char*)malloc(s_maxAddress);
 
-	_loadData();
+	_loadApplicationData();
 }
 
 
@@ -194,7 +194,7 @@ void TrainingApplication::onFrameBegin()
 void TrainingApplication::update()
 {
 	// CHECK FBA PROCESS
-	if (m_options.autoAttach && !_isAttachedToFBA())
+	if (m_applicationData.autoAttach && !_isAttachedToFBA())
 	{
 		_attachToFBA();
 	}
@@ -225,25 +225,25 @@ void TrainingApplication::update()
 	{
 		if (ImGui::BeginMenu("Options"))
 		{
-			IMGUI_AUTOSAVE(ImGui::MenuItem("Auto attach to FBA", "", &m_options.autoAttach));
+			IMGUI_APPDATA(ImGui::MenuItem("Auto attach to FBA", "", &m_applicationData.autoAttach));
 			ImGui::EndMenu();
 		}
 
 		if (ImGui::BeginMenu("Misc"))
 		{
-			IMGUI_AUTOSAVE(ImGui::MenuItem("Show Memory Debugger", "", &m_showMemoryDebugger));
-			IMGUI_AUTOSAVE(ImGui::MenuItem("Show Memory Map", "", &m_showMemoryMap));
+			IMGUI_APPDATA(ImGui::MenuItem("Show Memory Debugger", "", &m_applicationData.showMemoryDebugger));
+			IMGUI_APPDATA(ImGui::MenuItem("Show Memory Map", "", &m_applicationData.showMemoryMap));
 			ImGui::MenuItem("Show ImGui Demo Window", "", &m_showDemoWindow);
 			ImGui::EndMenu();
 		}
 
 		if (!_isAttachedToFBA())
 		{
-			float offset = m_options.autoAttach ? 130.f : 191.f;
+			float offset = m_applicationData.autoAttach ? 130.f : 191.f;
 			ImGui::SameLine(0, ImGui::GetContentRegionAvail().x - offset);
 			ImGui::Text("Not attached to FBA");
 
-			if (!m_options.autoAttach)
+			if (!m_applicationData.autoAttach)
 			{
 				if (ImGui::Button("Attach"))
 				{
@@ -253,11 +253,11 @@ void TrainingApplication::update()
 		}
 		else
 		{
-			float offset = m_options.autoAttach ? 102.f : 170.f;
+			float offset = m_applicationData.autoAttach ? 102.f : 170.f;
 
 			ImGui::SameLine(0, ImGui::GetContentRegionAvail().x - offset);
 			ImGui::Text("Attached to FBA");
-			if (!m_options.autoAttach)
+			if (!m_applicationData.autoAttach)
 			{
 				if (ImGui::Button("Dettach"))
 				{
@@ -312,7 +312,7 @@ void TrainingApplication::update()
 	if (m_showDemoWindow)
 		ImGui::ShowDemoWindow(&m_showDemoWindow);
 
-	bool showMemoryDebugger = m_showMemoryDebugger;
+	bool showMemoryDebugger = m_applicationData.showMemoryDebugger;
 	if (showMemoryDebugger)
 	{
 		if (ImGui::Begin("Memory Debugger", &showMemoryDebugger))
@@ -382,13 +382,13 @@ void TrainingApplication::update()
 		}
 		ImGui::End();
 	}
-	if (showMemoryDebugger != m_showMemoryDebugger)
+	if (showMemoryDebugger != m_applicationData.showMemoryDebugger)
 	{
-		m_showMemoryDebugger = showMemoryDebugger;
-		_saveData();
+		m_applicationData.showMemoryDebugger = showMemoryDebugger;
+		_saveApplicationData();
 	}
 
-	bool showMemoryMap = m_showMemoryMap;
+	bool showMemoryMap = m_applicationData.showMemoryMap;
 	if (showMemoryMap)
 	{
 		SIZE_T bytesRead = 0;
@@ -442,10 +442,10 @@ void TrainingApplication::update()
 
 		ImGui::End();
 	}
-	if (showMemoryMap != m_showMemoryMap)
+	if (showMemoryMap != m_applicationData.showMemoryMap)
 	{
-		m_showMemoryMap = showMemoryMap;
-		_saveData();
+		m_applicationData.showMemoryMap = showMemoryMap;
+		_saveApplicationData();
 	}
 
 	if (m_isRecording)
@@ -482,7 +482,7 @@ void TrainingApplication::_attachToFBA()
 
 	if (!_findFBAProcessHandle())
 	{
-		if (!m_options.autoAttach)
+		if (!m_applicationData.autoAttach)
 			printf("Error: Failed to find FBA process.\n");
 
 		return;
@@ -491,7 +491,7 @@ void TrainingApplication::_attachToFBA()
 	m_ramStartingAddress = FindRAMStartAddress(m_FBAProcessHandle);
 	if (!m_ramStartingAddress)
 	{
-		if (!m_options.autoAttach)
+		if (!m_applicationData.autoAttach)
 			printf("Error: Failed to find RAM starting address.\n");
 
 		return;
@@ -578,29 +578,27 @@ bool TrainingApplication::_findFBAProcessHandle()
 	return true;
 }
 
-void TrainingApplication::_saveData()
+void TrainingApplication::_saveApplicationData()
 {
 	m_dataSerializer.beginWrite();
-	m_dataSerializer.serialize("options", m_options);
-	m_dataSerializer.serialize("showMemoryDebugger", m_showMemoryDebugger);
-	m_dataSerializer.serialize("showMemoryMap", m_showMemoryMap);
+	m_dataSerializer.serialize("applicationData", m_applicationData);
 	m_dataSerializer.endWrite();
 
 	const void* data = nullptr;
 	size_t dataSize = 0u;
 	m_dataSerializer.getWriteData(data, dataSize);
 
-	FILE* fp = fopen(s_saveFileName, "w");
+	FILE* fp = fopen(s_applicationDataFileName, "w");
 	fwrite(data, dataSize, 1, fp);
 	fclose(fp);
 }
 
-void TrainingApplication::_loadData()
+void TrainingApplication::_loadApplicationData()
 {
 	size_t dataSize = 0u;
 	void* data = nullptr;
 
-	FILE* fp = fopen(s_saveFileName, "r");
+	FILE* fp = fopen(s_applicationDataFileName, "r");
 	if (!fp)
 		return;
 
@@ -614,9 +612,7 @@ void TrainingApplication::_loadData()
 	fclose(fp);
 
 	m_dataSerializer.beginRead(data, dataSize);
-	m_dataSerializer.serialize("options", m_options);
-	m_dataSerializer.serialize("showMemoryDebugger", m_showMemoryDebugger);
-	m_dataSerializer.serialize("showMemoryMap", m_showMemoryMap);
+	m_dataSerializer.serialize("applicationData", m_applicationData);
 	m_dataSerializer.endRead();
 
 	free(data);
