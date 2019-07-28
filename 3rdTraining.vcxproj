@@ -162,6 +162,7 @@
     <ClInclude Include="extern\imgui\imstb_textedit.h" />
     <ClInclude Include="extern\imgui\imstb_truetype.h" />
     <ClInclude Include="extern\mirror\mirror.h" />
+    <ClInclude Include="extern\mirror\tools\BinarySerializer.h" />
     <ClInclude Include="src\MemVar.h" />
     <ClInclude Include="src\TrainingApplication.h" />
   </ItemGroup>
@@ -173,6 +174,7 @@
     <ClCompile Include="extern\imgui\imgui_draw.cpp" />
     <ClCompile Include="extern\imgui\imgui_widgets.cpp" />
     <ClCompile Include="extern\mirror\mirror.cpp" />
+    <ClCompile Include="extern\mirror\tools\BinarySerializer.cpp" />
     <ClCompile Include="src\3rdTraining.cpp" />
     <ClCompile Include="src\MemVar.cpp" />
     <ClCompile Include="src\TrainingApplication.cpp" />
