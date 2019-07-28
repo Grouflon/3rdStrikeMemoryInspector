@@ -1,4 +1,6 @@
 enc_temp_folder
+3rdTraining-cppcheck-build-dir
+3rdTraining.cppcheck
 bin
 obj
 .vs

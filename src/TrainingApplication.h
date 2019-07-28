@@ -15,21 +15,29 @@ public:
 	void watchFrameThreadMain();
 
 	System::Threading::Thread^ watchFrameThread;
-	System::Threading::ReaderWriterLock^ lock;
 	TrainingApplication* application;
 };
 
 struct TrainingApplicationData
 {
+	enum DockingMode
+	{
+		DockingMode_Undocked,
+		DockingMode_Left,
+		DockingMode_Right,
+	};
+
 	bool autoAttach = true;
 	bool showMemoryDebugger = false;
 	bool showMemoryMap = false;
+	DockingMode dockingMode = DockingMode_Undocked;
 
 	MIRROR_CLASS(TrainingApplicationData)
 	(
 		MIRROR_MEMBER(autoAttach)
 		MIRROR_MEMBER(showMemoryDebugger)
 		MIRROR_MEMBER(showMemoryMap)
+		MIRROR_MEMBER(dockingMode)
 	)
 };
 
@@ -59,10 +67,11 @@ private:
 	void _saveApplicationData();
 	void _loadApplicationData();
 
+	bool m_isDettachRequested = false;
 	gcroot<System::Diagnostics::Process^> m_FBAProcess = nullptr;
 	HANDLE m_FBAProcessHandle = nullptr;
-
 	size_t m_ramStartingAddress = 0;
+
 	uint32_t m_currentFrame = 0;
 
 	bool m_showDemoWindow = false;
@@ -70,8 +79,13 @@ private:
 	size_t m_debugAddress = 0;
 
 	gcroot<TrainingThreadHelper^> m_threads;
+	gcroot<System::Threading::SpinLock^> m_lock;
+
+	mirror::BinarySerializer m_dataSerializer;
+
 
 	TrainingApplicationData m_applicationData;
 
-	mirror::BinarySerializer m_dataSerializer;
+	char lol[128] = {};
+
 };

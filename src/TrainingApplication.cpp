@@ -16,8 +16,6 @@ static const char* s_applicationDataFileName = "application.data";
 char s_calibrationSequence[] = { 0x78, 0x00, 0x79, 0x00, 0x76, 0x00 };
 size_t s_calibrationSequenceOffset = 0x160B1B94 - 0x161091C0 - 0x02011377;
 
-uint32_t s_timeOutTime = 1000;
-
 enum class GlobalInputFlags : uint32_t
 {
 	GlobalInputFlags_Up = 0x0100,
@@ -154,6 +152,8 @@ void TrainingApplication::initialize()
 {
 	m_memoryBuffer = (char*)malloc(s_maxAddress);
 
+	m_lock = gcnew SpinLock();
+
 	_loadApplicationData();
 }
 
@@ -178,7 +178,6 @@ static bool m_p2CoinDown;
 
 void TrainingApplication::onFrameBegin()
 {
-	m_threads->lock->AcquireWriterLock(s_timeOutTime);
 	{
 		m_p1GlobalInputFlags = _readUnsignedInt(0x0206AA90, 2);
 		m_p1GameInputFlags = _readUnsignedInt(0x0202564B, 2);
@@ -188,7 +187,6 @@ void TrainingApplication::onFrameBegin()
 		m_p2GameInputFlags = _readUnsignedInt(0x02025685, 2);
 		m_p2CoinDown = _readByte(0x00206AAC1);
 	}
-	m_threads->lock->ReleaseWriterLock();
 }
 
 void TrainingApplication::update()
@@ -270,7 +268,9 @@ void TrainingApplication::update()
 
 	if (_isAttachedToFBA())
 	{
-		m_threads->lock->AcquireReaderLock(s_timeOutTime);
+		bool lockTaken = false;
+		m_lock->TryEnter(-1, lockTaken);
+		assert(lockTaken);
 
 		ImGui::Text("RAM starting address: 0x%08x", m_ramStartingAddress);
 		ImGui::Text("Frame: %d", _readUnsignedInt(memoryMap::frameNumber, 4));
@@ -303,7 +303,7 @@ void TrainingApplication::update()
 		ImGui::Text("P2 Game Input: %04X", m_p2GameInputFlags);
 		ImGui::Text("P2 Coin Down: %d", m_p2CoinDown);
 
-		m_threads->lock->ReleaseReaderLock();
+		m_lock->Exit();
 	}
 	else
 	{
@@ -315,67 +315,64 @@ void TrainingApplication::update()
 	bool showMemoryDebugger = m_applicationData.showMemoryDebugger;
 	if (showMemoryDebugger)
 	{
-		if (ImGui::Begin("Memory Debugger", &showMemoryDebugger))
+		static const size_t rowSize = 0x10;
+		static const size_t rowCount = 25;
+		static const size_t bytesToRead = rowSize * rowCount;
+
+		ImGui::Begin("Memory Debugger", &showMemoryDebugger);
+		if (!_isAttachedToFBA())
 		{
-			static const size_t rowSize = 0x10;
-			static const size_t rowCount = 25;
-			static const size_t bytesToRead = rowSize * rowCount;
-
-			if (!_isAttachedToFBA())
+			ImGui::Text("Not attached to FBA");
+		}
+		else
+		{
+			float mouseWheel = ImGui::GetIO().MouseWheel;
+			if (mouseWheel < 0.f)
 			{
-				ImGui::Text("Not attached to FBA");
-				ImGui::End();
+				_incrementDebugAddress(0x10);
 			}
-			else
+			else if (mouseWheel > 0.f)
 			{
-				float mouseWheel = ImGui::GetIO().MouseWheel;
-				if (mouseWheel < 0.f)
-				{
-					_incrementDebugAddress(0x10);
-				}
-				else if (mouseWheel > 0.f)
-				{
-					_incrementDebugAddress(-0x10);
-				}
+				_incrementDebugAddress(-0x10);
+			}
 
-				if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
-				{
-					_incrementDebugAddress(-(int)rowCount);
-				}
-				if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
-				{
-					_incrementDebugAddress((int)rowCount);
-				}
+			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
+			{
+				_incrementDebugAddress(-(int)rowCount);
+			}
+			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
+			{
+				_incrementDebugAddress((int)rowCount);
+			}
 
-				char addressBuffer[9] = {};
-				sprintf(addressBuffer, "%08X\0", m_debugAddress);
-				if (ImGui::InputText("Address", addressBuffer, 9))
-				{
-					m_debugAddress = (size_t)strtoll(addressBuffer, nullptr, 16);
-				}
-				ImGui::Separator();
+			char addressBuffer[9] = {};
+			sprintf(addressBuffer, "%08X\0", m_debugAddress);
+			if (ImGui::InputText("Address", addressBuffer, 9))
+			{
+				m_debugAddress = (size_t)strtoll(addressBuffer, nullptr, 16);
+			}
+			ImGui::Separator();
 
-				char memoryBuffer[bytesToRead];
-				SIZE_T bytesRead;
-				void* FBAAddress = (void*)(m_ramStartingAddress + m_debugAddress);
-				ReadProcessMemory(m_FBAProcessHandle, FBAAddress, memoryBuffer, bytesToRead, &bytesRead);
+			char memoryBuffer[bytesToRead];
+			SIZE_T bytesRead;
+			void* FBAAddress = (void*)(m_ramStartingAddress + m_debugAddress);
+			ReadProcessMemory(m_FBAProcessHandle, FBAAddress, memoryBuffer, bytesToRead, &bytesRead);
 
-				for (size_t row = 0; row < rowCount; ++row)
+			for (size_t row = 0; row < rowCount; ++row)
+			{
+				ImGui::Text("%08X", m_debugAddress + row * 0x10);
+				ImGui::SameLine(0.f, 20.f);
+				for (size_t col = 0; col < rowSize; ++col)
 				{
-					ImGui::Text("%08X", m_debugAddress + row * 0x10);
-					ImGui::SameLine(0.f, 20.f);
-					for (size_t col = 0; col < rowSize; ++col)
+					ImGui::Text("%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
+
+					if (col == 7)
 					{
-						ImGui::Text("%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
-
-						if (col == 7)
-						{
-							ImGui::SameLine(0.f, 15.f);
-						}
-						else if (col != rowSize - 1)
-						{
-							ImGui::SameLine();
-						}
+						ImGui::SameLine(0.f, 15.f);
+					}
+					else if (col != rowSize - 1)
+					{
+						ImGui::SameLine();
 					}
 				}
 			}
@@ -459,20 +456,26 @@ void TrainingApplication::update()
 
 void TrainingApplication::watchFrameChange()
 {
-	while (_isAttachedToFBA())
+	while (!m_isDettachRequested)
 	{
+		bool lockTaken = false;
+		m_lock->TryEnter(-1, lockTaken);
+		assert(lockTaken);
+
 		uint32_t currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
 		if (currentFrame != m_currentFrame)
 		{
 			m_currentFrame = currentFrame;
 			onFrameBegin();
 		}
+
+		m_lock->Exit();
 	}
 }
 
 bool TrainingApplication::_isAttachedToFBA()
 {
-	return m_FBAProcessHandle != nullptr && static_cast<Process^>(m_FBAProcess) != nullptr && m_ramStartingAddress != 0;
+	return m_FBAProcessHandle != nullptr;
 }
 
 void TrainingApplication::_attachToFBA()
@@ -502,7 +505,6 @@ void TrainingApplication::_attachToFBA()
 	m_threads = gcnew TrainingThreadHelper();
 	m_threads->watchFrameThread = gcnew Thread(gcnew ThreadStart(m_threads, &TrainingThreadHelper::watchFrameThreadMain));
 	m_threads->watchFrameThread->Name = "WatchFrame";
-	m_threads->lock = gcnew ReaderWriterLock();
 	m_threads->application = this;
 	m_threads->watchFrameThread->Start();
 }
@@ -512,12 +514,14 @@ void TrainingApplication::_dettachFromFBA()
 	if (!_isAttachedToFBA())
 		return;
 
+	m_isDettachRequested = true;
+	m_threads->watchFrameThread->Join();
+	m_threads = nullptr;
+	m_isDettachRequested = false;
+
 	m_ramStartingAddress = 0;
 	m_FBAProcessHandle = nullptr;
 	m_FBAProcess = nullptr;
-
-	m_threads->watchFrameThread->Join();
-	m_threads = nullptr;
 }
 
 void TrainingApplication::_writeByte(size_t _address, char _byte)
