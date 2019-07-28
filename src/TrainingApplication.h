@@ -16,6 +16,11 @@ public:
 	TrainingApplication* application;
 };
 
+struct TrainingApplicationOptions
+{
+	bool autoAttach = true;
+};
+
 class TrainingApplication
 {
 public:
@@ -37,8 +42,11 @@ private:
 	long long unsigned int _readUnsignedInt(size_t _address, size_t _size);
 	void _incrementDebugAddress(int64_t _increment);
 
+	bool _findFBAProcessHandle();
 
+	gcroot<System::Diagnostics::Process^> m_FBAProcess = nullptr;
 	HANDLE m_FBAProcessHandle = nullptr;
+
 	size_t m_ramStartingAddress = 0;
 	uint32_t m_currentFrame = 0;
 
@@ -48,4 +56,6 @@ private:
 	size_t m_debugAddress = 0;
 
 	gcroot<TrainingThreadHelper^> m_threads;
+
+	TrainingApplicationOptions m_options;
 };

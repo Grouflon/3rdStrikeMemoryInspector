@@ -71,33 +71,6 @@ namespace memoryMap
 
 size_t s_maxAddress = 0x02080000;
 
-HANDLE FindFBAProcessHandle()
-{
-	array<Process^>^ processes;
-	processes = Process::GetProcessesByName("ggpofba");
-	if (processes->Length == 0)
-		processes = Process::GetProcessesByName("ggpofba-ng");
-
-	Process^ fbaProcess = nullptr;
-
-	for (int i = 0; i < processes->Length; ++i)
-	{
-		Process^ p = processes[i];
-		if (p->MainWindowTitle->IndexOf("Street Fighter III") != -1)
-		{
-			fbaProcess = p;
-			break;
-		}
-	}
-
-	if (fbaProcess == nullptr)
-	{
-		return nullptr;
-	}
-
-	return OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, false, fbaProcess->Id);
-}
-
 size_t FindRAMStartAddress(HANDLE _processHandle)
 {
 	SYSTEM_INFO si;
@@ -175,14 +148,6 @@ void TrainingThreadHelper::watchFrameThreadMain()
 void TrainingApplication::initialize()
 {
 	m_memoryBuffer = (char*)malloc(s_maxAddress);
-
-	m_threads = gcnew TrainingThreadHelper();
-	m_threads->watchFrameThread = gcnew Thread(gcnew ThreadStart(m_threads, &TrainingThreadHelper::watchFrameThreadMain));
-	m_threads->watchFrameThread->Name = "WatchFrame";
-	m_threads->lock = gcnew ReaderWriterLock();
-	m_threads->application = this;
-
-	_attachToFBA();
 }
 
 
@@ -221,6 +186,25 @@ void TrainingApplication::onFrameBegin()
 
 void TrainingApplication::update()
 {
+	// CHECK FBA PROCESS
+	if (m_options.autoAttach && !_isAttachedToFBA())
+	{
+		_attachToFBA();
+	}
+	if (static_cast<Process^>(m_FBAProcess) != nullptr)
+	{
+		m_FBAProcess->Refresh();
+
+		bool hasExited = m_FBAProcess->HasExited;
+		String^ title = m_FBAProcess->MainWindowTitle;
+
+		if (hasExited
+		|| (title != "" && title->IndexOf("Street Fighter III") == -1))
+		{
+			_dettachFromFBA();
+		}
+	}
+
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 	ImGui::Begin("Body", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoDecoration);
@@ -232,6 +216,12 @@ void TrainingApplication::update()
 
 	if (ImGui::BeginMenuBar())
 	{
+		if (ImGui::BeginMenu("Options"))
+		{
+			ImGui::MenuItem("Auto attach to FBA", "", &m_options.autoAttach);
+			ImGui::EndMenu();
+		}
+
 		if (ImGui::BeginMenu("Misc"))
 		{
 			ImGui::MenuItem("Show Memory Debugger", "", &m_showMemoryDebugger);
@@ -242,20 +232,30 @@ void TrainingApplication::update()
 
 		if (!_isAttachedToFBA())
 		{
-			ImGui::SameLine(0, ImGui::GetContentRegionAvail().x - 191.f);
+			float offset = m_options.autoAttach ? 130.f : 191.f;
+			ImGui::SameLine(0, ImGui::GetContentRegionAvail().x - offset);
 			ImGui::Text("Not attached to FBA");
-			if (ImGui::Button("Attach"))
+
+			if (!m_options.autoAttach)
 			{
-				_attachToFBA();
+				if (ImGui::Button("Attach"))
+				{
+					_attachToFBA();
+				}
 			}
 		}
 		else
 		{
-			ImGui::SameLine(0, ImGui::GetContentRegionAvail().x - 170.f);
+			float offset = m_options.autoAttach ? 102.f : 170.f;
+
+			ImGui::SameLine(0, ImGui::GetContentRegionAvail().x - offset);
 			ImGui::Text("Attached to FBA");
-			if (ImGui::Button("Dettach"))
+			if (!m_options.autoAttach)
 			{
-				_dettachFromFBA();
+				if (ImGui::Button("Dettach"))
+				{
+					_dettachFromFBA();
+				}
 			}
 		}
 		ImGui::EndMenuBar();
@@ -300,7 +300,6 @@ void TrainingApplication::update()
 	}
 	else
 	{
-		ImGui::Text("zob");
 	}
 
 	if (m_showDemoWindow)
@@ -376,62 +375,65 @@ void TrainingApplication::update()
 		}
 	}
 
-	SIZE_T bytesRead = 0;
-	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
-	ImGui::Begin("Memory Map", &m_showMemoryMap);
-	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.f, 0.f, 0.f, 1.f));
-	if (!m_isRecording)
+	if (m_showMemoryMap)
 	{
-		if (ImGui::Button("Record"))
+		SIZE_T bytesRead = 0;
+		ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
+		ImGui::Begin("Memory Map", &m_showMemoryMap);
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.f, 0.f, 0.f, 1.f));
+		if (!m_isRecording)
 		{
-			m_isRecording = true;
+			if (ImGui::Button("Record"))
+			{
+				m_isRecording = true;
+			}
 		}
-	}
-	else
-	{
-		if (ImGui::Button("Stop Recording"))
+		else
 		{
-			m_isRecording = false;
+			if (ImGui::Button("Stop Recording"))
+			{
+				m_isRecording = false;
+			}
 		}
+		ImGui::PopStyleColor(1);
+		ImGui::Text("%llu", bytesRead / 8);
+		ImGui::Separator();
+
+		/*ImVec2 drawStart = ImGui::GetCursorScreenPos();
+		ImVec2 drawSize = ImGui::GetContentRegionAvail();
+		size_t minMemoryMapSize = (long long unsigned)drawSize.x * (long long unsigned)drawSize.y;
+		if (minMemoryMapSize > m_memoryMapSize)
+		{
+			m_memoryMapSize = minMemoryMapSize;
+			m_memoryMapData = (char*)realloc(m_memoryMapData, m_memoryMapSize);
+		}
+		memset(m_memoryMapData, 0, m_memoryMapSize);
+
+		long long unsigned* u64Buffer = (long long unsigned*)m_memoryBuffer;
+		float increment = float(bytesRead / sizeof(long long unsigned)) / float(minMemoryMapSize);
+		for (size_t i = 0; i < (bytesRead / sizeof(long long unsigned)); ++i)
+		{
+			size_t pixelIndex = i / std::ceil(increment);
+			m_memoryMapData[pixelIndex] = m_memoryMapData[pixelIndex] & u64Buffer[i];
+		}
+
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		for (size_t i = 0; i < minMemoryMapSize; ++i)
+		{
+			ImColor col = m_memoryMapData[i] ? ImColor(1.f, 1.f, 1.f, 1.f) : ImColor(1.f, 1.f, 1.f, .3f);
+			ImVec2 pixelStart = ImVec2(drawStart.x + i % (long long unsigned)drawSize.x, drawStart.y + i / (long long unsigned)drawSize.x);
+			ImVec2 pixelEnd = ImVec2(pixelStart.x + 1, pixelStart.y + 1);
+			drawList->AddRectFilled(pixelStart, pixelEnd, col);
+		}*/
+
+		ImGui::End();
 	}
-	ImGui::PopStyleColor(1);
-	ImGui::Text("%llu", bytesRead/8);
-	ImGui::Separator();
-
-	/*ImVec2 drawStart = ImGui::GetCursorScreenPos();
-	ImVec2 drawSize = ImGui::GetContentRegionAvail();
-	size_t minMemoryMapSize = (long long unsigned)drawSize.x * (long long unsigned)drawSize.y;
-	if (minMemoryMapSize > m_memoryMapSize)
-	{
-		m_memoryMapSize = minMemoryMapSize;
-		m_memoryMapData = (char*)realloc(m_memoryMapData, m_memoryMapSize);
-	}
-	memset(m_memoryMapData, 0, m_memoryMapSize);
-
-	long long unsigned* u64Buffer = (long long unsigned*)m_memoryBuffer;
-	float increment = float(bytesRead / sizeof(long long unsigned)) / float(minMemoryMapSize);
-	for (size_t i = 0; i < (bytesRead / sizeof(long long unsigned)); ++i)
-	{
-		size_t pixelIndex = i / std::ceil(increment);
-		m_memoryMapData[pixelIndex] = m_memoryMapData[pixelIndex] & u64Buffer[i];
-	}
-
-	ImDrawList* drawList = ImGui::GetWindowDrawList();
-	for (size_t i = 0; i < minMemoryMapSize; ++i)
-	{
-		ImColor col = m_memoryMapData[i] ? ImColor(1.f, 1.f, 1.f, 1.f) : ImColor(1.f, 1.f, 1.f, .3f);
-		ImVec2 pixelStart = ImVec2(drawStart.x + i % (long long unsigned)drawSize.x, drawStart.y + i / (long long unsigned)drawSize.x);
-		ImVec2 pixelEnd = ImVec2(pixelStart.x + 1, pixelStart.y + 1);
-		drawList->AddRectFilled(pixelStart, pixelEnd, col);
-	}*/
-
-	ImGui::End();
+	
 
 	if (m_isRecording)
 	{
 		
 	}
-	
 
 	// END
 	ImGui::End();
@@ -452,7 +454,7 @@ void TrainingApplication::watchFrameChange()
 
 bool TrainingApplication::_isAttachedToFBA()
 {
-	return m_FBAProcessHandle != nullptr && m_ramStartingAddress != 0;
+	return m_FBAProcessHandle != nullptr && static_cast<Process^>(m_FBAProcess) != nullptr && m_ramStartingAddress != 0;
 }
 
 void TrainingApplication::_attachToFBA()
@@ -460,21 +462,30 @@ void TrainingApplication::_attachToFBA()
 	if (_isAttachedToFBA())
 		return;
 
-	m_FBAProcessHandle = FindFBAProcessHandle();
-	if (!m_FBAProcessHandle)
+	if (!_findFBAProcessHandle())
 	{
-		printf("Error: Failed to find FBA process.\n");
+		if (!m_options.autoAttach)
+			printf("Error: Failed to find FBA process.\n");
+
 		return;
 	}
 
 	m_ramStartingAddress = FindRAMStartAddress(m_FBAProcessHandle);
 	if (!m_ramStartingAddress)
 	{
-		printf("Error: Failed to find RAM starting address.\n");
+		if (!m_options.autoAttach)
+			printf("Error: Failed to find RAM starting address.\n");
+
 		return;
 	}
 
 	m_currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
+
+	m_threads = gcnew TrainingThreadHelper();
+	m_threads->watchFrameThread = gcnew Thread(gcnew ThreadStart(m_threads, &TrainingThreadHelper::watchFrameThreadMain));
+	m_threads->watchFrameThread->Name = "WatchFrame";
+	m_threads->lock = gcnew ReaderWriterLock();
+	m_threads->application = this;
 	m_threads->watchFrameThread->Start();
 }
 
@@ -485,8 +496,10 @@ void TrainingApplication::_dettachFromFBA()
 
 	m_ramStartingAddress = 0;
 	m_FBAProcessHandle = nullptr;
+	m_FBAProcess = nullptr;
 
 	m_threads->watchFrameThread->Join();
+	m_threads = nullptr;
 }
 
 void TrainingApplication::_writeByte(size_t _address, char _byte)
@@ -513,6 +526,38 @@ void TrainingApplication::_incrementDebugAddress(int64_t _increment)
 		if (m_debugAddress > s_maxAddress)
 			m_debugAddress = s_maxAddress;
 	}
+}
+
+bool TrainingApplication::_findFBAProcessHandle()
+{
+	array<Process^>^ processes;
+	processes = Process::GetProcessesByName("ggpofba");
+	if (processes->Length == 0)
+		processes = Process::GetProcessesByName("ggpofba-ng");
+
+	m_FBAProcess = nullptr;
+
+	for (int i = 0; i < processes->Length; ++i)
+	{
+		Process^ p = processes[i];
+		if (p->MainWindowTitle->IndexOf("Street Fighter III") != -1)
+		{
+			m_FBAProcess = p;
+			break;
+		}
+	}
+
+	if (static_cast<Process^>(m_FBAProcess) == nullptr)
+	{
+		return false;
+	}
+
+	m_FBAProcessHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, false, m_FBAProcess->Id);
+	if (m_FBAProcessHandle == nullptr)
+	{
+		return false;
+	}
+	return true;
 }
 
 long long unsigned int TrainingApplication::_readUnsignedInt(size_t _address, size_t _size)

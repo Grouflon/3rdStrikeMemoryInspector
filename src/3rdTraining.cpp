@@ -79,18 +79,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	return ::DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
-struct Test
-{
-	float v1;
-	float v2;
-
-	MIRROR(Test)
-	(
-		M_MEMBER(v1);
-		M_MEMBER(v2);
-	);
-};
-
 int main(array<System::String ^> ^args)
 {
 	// Create application window
