@@ -1,5 +1,7 @@
 #include "TrainingApplication.h"
 
+
+
 #include <windows.h>
 #include <imgui.h>
 #include <cstdio>
@@ -8,6 +10,8 @@
 using namespace System;
 using namespace System::Diagnostics;
 using namespace System::Threading;
+
+static const char* s_saveFileName = "save.data";
 
 char s_calibrationSequence[] = { 0x78, 0x00, 0x79, 0x00, 0x76, 0x00 };
 size_t s_calibrationSequenceOffset = 0x160B1B94 - 0x161091C0 - 0x02011377;
@@ -67,6 +71,8 @@ namespace memoryMap
 	static size_t P2Combo = 0x02069621;
 	static size_t P1Attacking = 0x0206909a;
 }
+
+#define IMGUI_AUTOSAVE(exp) if (exp) { _saveData(); }
 
 
 size_t s_maxAddress = 0x02080000;
@@ -133,7 +139,6 @@ size_t FindRAMStartAddress(HANDLE _processHandle)
 static char* m_memoryBuffer = nullptr;
 static char* m_memoryMapData = nullptr;
 static size_t m_memoryMapSize = 0;
-static bool m_showMemoryMap = true;
 
 static bool m_isRecording = false;
 static size_t m_memorySamplesCount = 0;
@@ -148,6 +153,8 @@ void TrainingThreadHelper::watchFrameThreadMain()
 void TrainingApplication::initialize()
 {
 	m_memoryBuffer = (char*)malloc(s_maxAddress);
+
+	_loadData();
 }
 
 
@@ -218,14 +225,14 @@ void TrainingApplication::update()
 	{
 		if (ImGui::BeginMenu("Options"))
 		{
-			ImGui::MenuItem("Auto attach to FBA", "", &m_options.autoAttach);
+			IMGUI_AUTOSAVE(ImGui::MenuItem("Auto attach to FBA", "", &m_options.autoAttach));
 			ImGui::EndMenu();
 		}
 
 		if (ImGui::BeginMenu("Misc"))
 		{
-			ImGui::MenuItem("Show Memory Debugger", "", &m_showMemoryDebugger);
-			ImGui::MenuItem("Show Memory Map", "", &m_showMemoryMap);
+			IMGUI_AUTOSAVE(ImGui::MenuItem("Show Memory Debugger", "", &m_showMemoryDebugger));
+			IMGUI_AUTOSAVE(ImGui::MenuItem("Show Memory Map", "", &m_showMemoryMap));
 			ImGui::MenuItem("Show ImGui Demo Window", "", &m_showDemoWindow);
 			ImGui::EndMenu();
 		}
@@ -305,81 +312,88 @@ void TrainingApplication::update()
 	if (m_showDemoWindow)
 		ImGui::ShowDemoWindow(&m_showDemoWindow);
 
-	if (m_showMemoryDebugger)
+	bool showMemoryDebugger = m_showMemoryDebugger;
+	if (showMemoryDebugger)
 	{
-		static const size_t rowSize = 0x10;
-		static const size_t rowCount = 25;
-		static const size_t bytesToRead = rowSize * rowCount;
-
-		ImGui::Begin("Memory Debugger", &m_showMemoryDebugger);
-
-		if (!_isAttachedToFBA())
+		if (ImGui::Begin("Memory Debugger", &showMemoryDebugger))
 		{
-			ImGui::Text("Not attached to FBA");
-			ImGui::End();
-		}
-		else
-		{
-			float mouseWheel = ImGui::GetIO().MouseWheel;
-			if (mouseWheel < 0.f)
-			{
-				_incrementDebugAddress(0x10);
-			}
-			else if (mouseWheel > 0.f)
-			{
-				_incrementDebugAddress(-0x10);
-			}
+			static const size_t rowSize = 0x10;
+			static const size_t rowCount = 25;
+			static const size_t bytesToRead = rowSize * rowCount;
 
-			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
+			if (!_isAttachedToFBA())
 			{
-				_incrementDebugAddress(-(int)rowCount);
+				ImGui::Text("Not attached to FBA");
+				ImGui::End();
 			}
-			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
+			else
 			{
-				_incrementDebugAddress((int)rowCount);
-			}
-
-			char addressBuffer[9] = {};
-			sprintf(addressBuffer, "%08X\0", m_debugAddress);
-			if (ImGui::InputText("Address", addressBuffer, 9))
-			{
-				m_debugAddress = (size_t)strtoll(addressBuffer, nullptr, 16);
-			}
-			ImGui::Separator();
-
-			char memoryBuffer[bytesToRead];
-			SIZE_T bytesRead;
-			void* FBAAddress = (void*)(m_ramStartingAddress + m_debugAddress);
-			ReadProcessMemory(m_FBAProcessHandle, FBAAddress, memoryBuffer, bytesToRead, &bytesRead);
-
-			for (size_t row = 0; row < rowCount; ++row)
-			{
-				ImGui::Text("%08X", m_debugAddress + row * 0x10);
-				ImGui::SameLine(0.f, 20.f);
-				for (size_t col = 0; col < rowSize; ++col)
+				float mouseWheel = ImGui::GetIO().MouseWheel;
+				if (mouseWheel < 0.f)
 				{
-					ImGui::Text("%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
+					_incrementDebugAddress(0x10);
+				}
+				else if (mouseWheel > 0.f)
+				{
+					_incrementDebugAddress(-0x10);
+				}
 
-					if (col == 7)
+				if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
+				{
+					_incrementDebugAddress(-(int)rowCount);
+				}
+				if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
+				{
+					_incrementDebugAddress((int)rowCount);
+				}
+
+				char addressBuffer[9] = {};
+				sprintf(addressBuffer, "%08X\0", m_debugAddress);
+				if (ImGui::InputText("Address", addressBuffer, 9))
+				{
+					m_debugAddress = (size_t)strtoll(addressBuffer, nullptr, 16);
+				}
+				ImGui::Separator();
+
+				char memoryBuffer[bytesToRead];
+				SIZE_T bytesRead;
+				void* FBAAddress = (void*)(m_ramStartingAddress + m_debugAddress);
+				ReadProcessMemory(m_FBAProcessHandle, FBAAddress, memoryBuffer, bytesToRead, &bytesRead);
+
+				for (size_t row = 0; row < rowCount; ++row)
+				{
+					ImGui::Text("%08X", m_debugAddress + row * 0x10);
+					ImGui::SameLine(0.f, 20.f);
+					for (size_t col = 0; col < rowSize; ++col)
 					{
-						ImGui::SameLine(0.f, 15.f);
-					}
-					else if (col != rowSize - 1)
-					{
-						ImGui::SameLine();
+						ImGui::Text("%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
+
+						if (col == 7)
+						{
+							ImGui::SameLine(0.f, 15.f);
+						}
+						else if (col != rowSize - 1)
+						{
+							ImGui::SameLine();
+						}
 					}
 				}
 			}
-
-			ImGui::End();
 		}
+		ImGui::End();
+	}
+	if (showMemoryDebugger != m_showMemoryDebugger)
+	{
+		m_showMemoryDebugger = showMemoryDebugger;
+		_saveData();
 	}
 
-	if (m_showMemoryMap)
+	bool showMemoryMap = m_showMemoryMap;
+	if (showMemoryMap)
 	{
 		SIZE_T bytesRead = 0;
 		ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
-		ImGui::Begin("Memory Map", &m_showMemoryMap);
+		ImGui::Begin("Memory Map", &showMemoryMap);
 		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.f, 0.f, 0.f, 1.f));
 		if (!m_isRecording)
 		{
@@ -428,7 +442,11 @@ void TrainingApplication::update()
 
 		ImGui::End();
 	}
-	
+	if (showMemoryMap != m_showMemoryMap)
+	{
+		m_showMemoryMap = showMemoryMap;
+		_saveData();
+	}
 
 	if (m_isRecording)
 	{
@@ -558,6 +576,50 @@ bool TrainingApplication::_findFBAProcessHandle()
 		return false;
 	}
 	return true;
+}
+
+void TrainingApplication::_saveData()
+{
+	m_dataSerializer.beginWrite();
+	m_dataSerializer.serialize("options", m_options);
+	m_dataSerializer.serialize("showMemoryDebugger", m_showMemoryDebugger);
+	m_dataSerializer.serialize("showMemoryMap", m_showMemoryMap);
+	m_dataSerializer.endWrite();
+
+	const void* data = nullptr;
+	size_t dataSize = 0u;
+	m_dataSerializer.getWriteData(data, dataSize);
+
+	FILE* fp = fopen(s_saveFileName, "w");
+	fwrite(data, dataSize, 1, fp);
+	fclose(fp);
+}
+
+void TrainingApplication::_loadData()
+{
+	size_t dataSize = 0u;
+	void* data = nullptr;
+
+	FILE* fp = fopen(s_saveFileName, "r");
+	if (!fp)
+		return;
+
+	fseek(fp, 0, SEEK_END);
+	dataSize = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+
+	data = malloc(dataSize);
+
+	fread(data, dataSize, 1, fp);
+	fclose(fp);
+
+	m_dataSerializer.beginRead(data, dataSize);
+	m_dataSerializer.serialize("options", m_options);
+	m_dataSerializer.serialize("showMemoryDebugger", m_showMemoryDebugger);
+	m_dataSerializer.serialize("showMemoryMap", m_showMemoryMap);
+	m_dataSerializer.endRead();
+
+	free(data);
 }
 
 long long unsigned int TrainingApplication::_readUnsignedInt(size_t _address, size_t _size)

@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <vcclr.h>
 
+#include <mirror.h>
+#include <tools/BinarySerializer.h>
+
 typedef void* HANDLE;
 class TrainingApplication;
 
@@ -19,6 +22,11 @@ public:
 struct TrainingApplicationOptions
 {
 	bool autoAttach = true;
+
+	MIRROR_CLASS(TrainingApplicationOptions)
+	(
+		MIRROR_MEMBER(autoAttach)
+	)
 };
 
 class TrainingApplication
@@ -44,6 +52,9 @@ private:
 
 	bool _findFBAProcessHandle();
 
+	void _saveData();
+	void _loadData();
+
 	gcroot<System::Diagnostics::Process^> m_FBAProcess = nullptr;
 	HANDLE m_FBAProcessHandle = nullptr;
 
@@ -51,11 +62,14 @@ private:
 	uint32_t m_currentFrame = 0;
 
 	bool m_showDemoWindow = false;
-	bool m_showMemoryDebugger = true;
+	bool m_showMemoryDebugger = false;
+	bool m_showMemoryMap = false;
 
 	size_t m_debugAddress = 0;
 
 	gcroot<TrainingThreadHelper^> m_threads;
 
 	TrainingApplicationOptions m_options;
+
+	mirror::BinarySerializer m_dataSerializer;
 };
