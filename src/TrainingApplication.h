@@ -47,7 +47,21 @@ struct TrainingApplicationData
 		MIRROR_MEMBER(windowY)
 		MIRROR_MEMBER(windowW)
 		MIRROR_MEMBER(windowH)
-	)
+	);
+};
+
+struct TrainingModeData
+{
+	bool enabled = false;
+	bool lockTimer = true;
+	bool infiniteLife = true;
+
+	MIRROR_CLASS(TrainingModeData)
+	(
+		MIRROR_MEMBER(enabled)
+		MIRROR_MEMBER(lockTimer)
+		MIRROR_MEMBER(infiniteLife)
+	);
 };
 
 class TrainingApplication
@@ -76,6 +90,9 @@ private:
 	void _saveApplicationData();
 	void _loadApplicationData();
 
+	void _saveTrainingData();
+	void _loadTrainingData();
+
 	HWND m_windowHandle = nullptr;
 
 	bool m_isDettachRequested = false;
@@ -96,6 +113,7 @@ private:
 
 
 	TrainingApplicationData m_applicationData;
+	TrainingModeData m_trainingData;
 
 	char lol[128] = {};
 

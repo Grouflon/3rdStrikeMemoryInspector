@@ -12,6 +12,7 @@ using namespace System::Diagnostics;
 using namespace System::Threading;
 
 static const char* s_applicationDataFileName = "application.data";
+static const char* s_trainingDataFileName = "training.data";
 
 char s_calibrationSequence[] = { 0x78, 0x00, 0x79, 0x00, 0x76, 0x00 };
 size_t s_calibrationSequenceOffset = 0x160B1B94 - 0x161091C0 - 0x02011377;
@@ -71,6 +72,7 @@ namespace memoryMap
 }
 
 #define IMGUI_APPDATA(exp) if (exp) { _saveApplicationData(); }
+#define IMGUI_TRAINDATA(exp) if (exp) { _saveTrainingData(); }
 
 
 size_t s_maxAddress = 0x02080000;
@@ -180,6 +182,16 @@ static bool m_p2CoinDown;
 
 void TrainingApplication::onFrameBegin()
 {
+	if (m_trainingData.enabled)
+	{
+		if (m_trainingData.lockTimer) _writeByte(memoryMap::timer, 100);
+		if (m_trainingData.infiniteLife)
+		{
+			_writeByte(memoryMap::P1Health, 160);
+			_writeByte(memoryMap::P2Health, 160);
+		}
+	}
+
 	{
 		m_p1GlobalInputFlags = _readUnsignedInt(0x0206AA90, 2);
 		m_p1GameInputFlags = _readUnsignedInt(0x0202564B, 2);
@@ -271,6 +283,7 @@ void TrainingApplication::update()
 
 	if (_isAttachedToFBA())
 	{
+		// WINDOW DOCKING
 		if (m_applicationData.dockingMode != DockingMode::Undocked)
 		{
 			WINDOWINFO FBAWindowInfo = {};
@@ -329,14 +342,18 @@ void TrainingApplication::update()
 				_saveApplicationData();
 			}
 		}
-
 		
 
 		bool lockTaken = false;
 		m_lock->TryEnter(-1, lockTaken);
 		assert(lockTaken);
 
-		ImGui::Text("RAM starting address: 0x%08x", m_ramStartingAddress);
+		ImGui::Checkbox("Training Mode Enabled", &m_trainingData.enabled);
+		ImGui::Separator();
+		ImGui::Checkbox("Lock timer", &m_trainingData.lockTimer);
+		ImGui::Checkbox("Infinite life", &m_trainingData.infiniteLife);
+
+		/*ImGui::Text("RAM starting address: 0x%08x", m_ramStartingAddress);
 		ImGui::Text("Frame: %d", _readUnsignedInt(memoryMap::frameNumber, 4));
 		ImGui::Text("Timer: %d", _readByte(memoryMap::timer));
 		ImGui::Text("P1 Health: %d", _readUnsignedInt(memoryMap::P1Health, 2));
@@ -365,7 +382,7 @@ void TrainingApplication::update()
 
 		ImGui::Text("P2 Global Input: %04X", m_p2GlobalInputFlags);
 		ImGui::Text("P2 Game Input: %04X", m_p2GameInputFlags);
-		ImGui::Text("P2 Coin Down: %d", m_p2CoinDown);
+		ImGui::Text("P2 Coin Down: %d", m_p2CoinDown);*/
 
 		m_lock->Exit();
 	}
@@ -686,6 +703,46 @@ void TrainingApplication::_loadApplicationData()
 	free(data);
 
 	SetWindowPos(m_windowHandle, nullptr, m_applicationData.windowX, m_applicationData.windowY, m_applicationData.windowW, m_applicationData.windowH, SWP_NOZORDER);
+}
+
+void TrainingApplication::_saveTrainingData()
+{
+	m_dataSerializer.beginWrite();
+	m_dataSerializer.serialize("trainingData", m_trainingData);
+	m_dataSerializer.endWrite();
+
+	const void* data = nullptr;
+	size_t dataSize = 0u;
+	m_dataSerializer.getWriteData(data, dataSize);
+
+	FILE* fp = fopen(s_trainingDataFileName, "w");
+	fwrite(data, dataSize, 1, fp);
+	fclose(fp);
+}
+
+void TrainingApplication::_loadTrainingData()
+{
+	size_t dataSize = 0u;
+	void* data = nullptr;
+
+	FILE* fp = fopen(s_trainingDataFileName, "r");
+	if (!fp)
+		return;
+
+	fseek(fp, 0, SEEK_END);
+	dataSize = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+
+	data = malloc(dataSize);
+
+	fread(data, dataSize, 1, fp);
+	fclose(fp);
+
+	m_dataSerializer.beginRead(data, dataSize);
+	m_dataSerializer.serialize("trainingData", m_trainingData);
+	m_dataSerializer.endRead();
+
+	free(data);
 }
 
 long long unsigned int TrainingApplication::_readUnsignedInt(size_t _address, size_t _size)
