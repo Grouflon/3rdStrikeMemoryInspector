@@ -1,5 +1,6 @@
 #pragma once
 
+#include <windows.h>
 #include <cstdint>
 #include <vcclr.h>
 
@@ -18,19 +19,23 @@ public:
 	TrainingApplication* application;
 };
 
+enum class DockingMode : int
+{
+	Undocked,
+	Left,
+	Right,
+};
+
 struct TrainingApplicationData
 {
-	enum DockingMode
-	{
-		DockingMode_Undocked,
-		DockingMode_Left,
-		DockingMode_Right,
-	};
-
 	bool autoAttach = true;
 	bool showMemoryDebugger = false;
 	bool showMemoryMap = false;
-	DockingMode dockingMode = DockingMode_Undocked;
+	DockingMode dockingMode = DockingMode::Undocked;
+	int windowX = 100;
+	int windowY = 100;
+	int windowW = 400;
+	int windowH = 700;
 
 	MIRROR_CLASS(TrainingApplicationData)
 	(
@@ -38,13 +43,17 @@ struct TrainingApplicationData
 		MIRROR_MEMBER(showMemoryDebugger)
 		MIRROR_MEMBER(showMemoryMap)
 		MIRROR_MEMBER(dockingMode)
+		MIRROR_MEMBER(windowX)
+		MIRROR_MEMBER(windowY)
+		MIRROR_MEMBER(windowW)
+		MIRROR_MEMBER(windowH)
 	)
 };
 
 class TrainingApplication
 {
 public:
-	void initialize();
+	void initialize(HWND _windowHandle);
 	void shutdown();
 	void update();
 
@@ -66,6 +75,8 @@ private:
 
 	void _saveApplicationData();
 	void _loadApplicationData();
+
+	HWND m_windowHandle = nullptr;
 
 	bool m_isDettachRequested = false;
 	gcroot<System::Diagnostics::Process^> m_FBAProcess = nullptr;

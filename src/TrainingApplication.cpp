@@ -148,8 +148,10 @@ void TrainingThreadHelper::watchFrameThreadMain()
 	application->watchFrameChange();
 }
 
-void TrainingApplication::initialize()
+void TrainingApplication::initialize(HWND _windowHandle)
 {
+	assert(_windowHandle);
+	m_windowHandle = _windowHandle;
 	m_memoryBuffer = (char*)malloc(s_maxAddress);
 
 	m_lock = gcnew SpinLock();
@@ -224,6 +226,7 @@ void TrainingApplication::update()
 		if (ImGui::BeginMenu("Options"))
 		{
 			IMGUI_APPDATA(ImGui::MenuItem("Auto attach to FBA", "", &m_applicationData.autoAttach));
+			IMGUI_APPDATA(ImGui::Combo("Docking Mode", (int*)&m_applicationData.dockingMode, "Undocked\0Left\0Right\0\0"));
 			ImGui::EndMenu();
 		}
 
@@ -268,6 +271,67 @@ void TrainingApplication::update()
 
 	if (_isAttachedToFBA())
 	{
+		if (m_applicationData.dockingMode != DockingMode::Undocked)
+		{
+			WINDOWINFO FBAWindowInfo = {};
+			{
+				bool result = GetWindowInfo((HWND)(void*)(m_FBAProcess->MainWindowHandle), &FBAWindowInfo);
+				assert(result);
+			}
+
+			WINDOWINFO TrainingWindowInfo = {};
+			{
+				bool result = GetWindowInfo(m_windowHandle, &TrainingWindowInfo);
+				assert(result);
+			}
+
+			int fbaX = FBAWindowInfo.rcWindow.left;
+			int fbaY = FBAWindowInfo.rcWindow.top;
+			int fbaW = FBAWindowInfo.rcWindow.right - FBAWindowInfo.rcWindow.left;
+			int fbaH = FBAWindowInfo.rcWindow.bottom - FBAWindowInfo.rcWindow.top;
+
+			int trX = TrainingWindowInfo.rcWindow.left;
+			int trY = TrainingWindowInfo.rcWindow.top;
+			int trW = TrainingWindowInfo.rcWindow.right - TrainingWindowInfo.rcWindow.left;
+			int trH = TrainingWindowInfo.rcWindow.bottom - TrainingWindowInfo.rcWindow.top;
+
+			if (trY + trH < fbaY + fbaH)
+			{
+				trY = fbaY + fbaH - trH;
+			}
+
+			if (trY > fbaY)
+			{
+				trY = fbaY;
+			}
+
+			if (m_applicationData.dockingMode == DockingMode::Left)
+			{
+				trX = fbaX - trW;
+			}
+			else if (m_applicationData.dockingMode == DockingMode::Right)
+			{
+				trX = fbaX + fbaW;
+			}
+
+			SetWindowPos(m_windowHandle, (HWND)(void*)(m_FBAProcess->MainWindowHandle), trX, trY, trW, trH, 0);
+
+			if (trX != m_applicationData.windowX
+				|| trY != m_applicationData.windowY
+				|| trW != m_applicationData.windowW
+				|| trH != m_applicationData.windowH
+				)
+			{
+				m_applicationData.windowX = trX;
+				m_applicationData.windowY = trY;
+				m_applicationData.windowW = trW;
+				m_applicationData.windowH = trH;
+				_saveApplicationData();
+			}
+		}
+
+		
+
 		bool lockTaken = false;
 		m_lock->TryEnter(-1, lockTaken);
 		assert(lockTaken);
@@ -620,6 +684,8 @@ void TrainingApplication::_loadApplicationData()
 	m_dataSerializer.endRead();
 
 	free(data);
+
+	SetWindowPos(m_windowHandle, nullptr, m_applicationData.windowX, m_applicationData.windowY, m_applicationData.windowW, m_applicationData.windowH, SWP_NOZORDER);
 }
 
 long long unsigned int TrainingApplication::_readUnsignedInt(size_t _address, size_t _size)
