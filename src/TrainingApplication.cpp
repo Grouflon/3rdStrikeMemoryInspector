@@ -159,6 +159,7 @@ void TrainingApplication::initialize(HWND _windowHandle)
 	m_lock = gcnew SpinLock();
 
 	_loadApplicationData();
+	_loadTrainingData();
 }
 
 
@@ -189,6 +190,14 @@ void TrainingApplication::onFrameBegin()
 		{
 			_writeByte(memoryMap::P1Health, 160);
 			_writeByte(memoryMap::P2Health, 160);
+		}
+		if (m_trainingData.disableMusic)
+		{
+			_writeByte(0x02078D06, 0x00);
+		}
+		else
+		{
+			_writeByte(0x02078D06, 0x06);
 		}
 	}
 
@@ -348,10 +357,11 @@ void TrainingApplication::update()
 		m_lock->TryEnter(-1, lockTaken);
 		assert(lockTaken);
 
-		ImGui::Checkbox("Training Mode Enabled", &m_trainingData.enabled);
+		IMGUI_TRAINDATA(ImGui::Checkbox("Training Mode Enabled", &m_trainingData.enabled));
 		ImGui::Separator();
-		ImGui::Checkbox("Lock timer", &m_trainingData.lockTimer);
-		ImGui::Checkbox("Infinite life", &m_trainingData.infiniteLife);
+		IMGUI_TRAINDATA(ImGui::Checkbox("Lock timer", &m_trainingData.lockTimer));
+		IMGUI_TRAINDATA(ImGui::Checkbox("Infinite life", &m_trainingData.infiniteLife));
+		IMGUI_TRAINDATA(ImGui::Checkbox("Disable music", &m_trainingData.disableMusic));
 
 		/*ImGui::Text("RAM starting address: 0x%08x", m_ramStartingAddress);
 		ImGui::Text("Frame: %d", _readUnsignedInt(memoryMap::frameNumber, 4));
@@ -419,18 +429,25 @@ void TrainingApplication::update()
 
 			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
 			{
-				_incrementDebugAddress(-(int)rowCount);
+				_incrementDebugAddress(-(int32_t)(rowCount * 0x10));
 			}
 			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
 			{
-				_incrementDebugAddress((int)rowCount);
+				_incrementDebugAddress((int32_t)(rowCount * 0x10));
 			}
 
-			char addressBuffer[9] = {};
-			sprintf(addressBuffer, "%08X\0", m_debugAddress);
-			if (ImGui::InputText("Address", addressBuffer, 9))
+			char addressBuffer[11] = {};
+			sprintf(addressBuffer, "0x%08X\0", m_debugAddress); 
+			if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
 			{
-				m_debugAddress = (size_t)strtoll(addressBuffer, nullptr, 16);
+				size_t len = strlen(addressBuffer);
+				memcpy(addressBuffer + (10 - len), addressBuffer, len + 1);
+				memset(addressBuffer, '0', (10 - len));
+				addressBuffer[0] = '0';
+				addressBuffer[1] = 'x';
+
+				m_debugAddress = (size_t)strtol(addressBuffer + 2, nullptr, 16);
+				m_debugAddress -= m_debugAddress % 0x10;
 			}
 			ImGui::Separator();
 

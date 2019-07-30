@@ -55,12 +55,14 @@ struct TrainingModeData
 	bool enabled = false;
 	bool lockTimer = true;
 	bool infiniteLife = true;
+	bool disableMusic = false;
 
 	MIRROR_CLASS(TrainingModeData)
 	(
 		MIRROR_MEMBER(enabled)
 		MIRROR_MEMBER(lockTimer)
 		MIRROR_MEMBER(infiniteLife)
+		MIRROR_MEMBER(disableMusic)
 	);
 };
 
