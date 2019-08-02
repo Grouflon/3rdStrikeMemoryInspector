@@ -406,76 +406,7 @@ void TrainingApplication::update()
 	bool showMemoryDebugger = m_applicationData.showMemoryDebugger;
 	if (showMemoryDebugger)
 	{
-		static const size_t rowSize = 0x10;
-		static const size_t rowCount = 25;
-		static const size_t bytesToRead = rowSize * rowCount;
-
-		ImGui::Begin("Memory Debugger", &showMemoryDebugger);
-		if (!_isAttachedToFBA())
-		{
-			ImGui::Text("Not attached to FBA");
-		}
-		else
-		{
-			float mouseWheel = ImGui::GetIO().MouseWheel;
-			if (mouseWheel < 0.f)
-			{
-				_incrementDebugAddress(0x10);
-			}
-			else if (mouseWheel > 0.f)
-			{
-				_incrementDebugAddress(-0x10);
-			}
-
-			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
-			{
-				_incrementDebugAddress(-(int32_t)(rowCount * 0x10));
-			}
-			if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
-			{
-				_incrementDebugAddress((int32_t)(rowCount * 0x10));
-			}
-
-			char addressBuffer[11] = {};
-			sprintf(addressBuffer, "0x%08X\0", m_debugAddress); 
-			if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
-			{
-				size_t len = strlen(addressBuffer);
-				memcpy(addressBuffer + (10 - len), addressBuffer, len + 1);
-				memset(addressBuffer, '0', (10 - len));
-				addressBuffer[0] = '0';
-				addressBuffer[1] = 'x';
-
-				m_debugAddress = (size_t)strtol(addressBuffer + 2, nullptr, 16);
-				m_debugAddress -= m_debugAddress % 0x10;
-			}
-			ImGui::Separator();
-
-			char memoryBuffer[bytesToRead];
-			SIZE_T bytesRead;
-			void* FBAAddress = (void*)(m_ramStartingAddress + m_debugAddress);
-			ReadProcessMemory(m_FBAProcessHandle, FBAAddress, memoryBuffer, bytesToRead, &bytesRead);
-
-			for (size_t row = 0; row < rowCount; ++row)
-			{
-				ImGui::Text("%08X", m_debugAddress + row * 0x10);
-				ImGui::SameLine(0.f, 20.f);
-				for (size_t col = 0; col < rowSize; ++col)
-				{
-					ImGui::Text("%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
-
-					if (col == 7)
-					{
-						ImGui::SameLine(0.f, 15.f);
-					}
-					else if (col != rowSize - 1)
-					{
-						ImGui::SameLine();
-					}
-				}
-			}
-		}
-		ImGui::End();
+		_updateMemoryDebugger(&showMemoryDebugger);
 	}
 	if (showMemoryDebugger != m_applicationData.showMemoryDebugger)
 	{
@@ -678,6 +609,88 @@ bool TrainingApplication::_findFBAProcessHandle()
 		return false;
 	}
 	return true;
+}
+
+void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
+{
+	static const size_t rowSize = 0x10;
+	static const size_t rowCount = 25;
+	static const size_t bytesToRead = rowSize * rowCount;
+
+	ImGui::Begin("Memory Debugger", _showMemoryDebugger);
+	if (!_isAttachedToFBA())
+	{
+		ImGui::Text("Not attached to FBA");
+	}
+	else
+	{
+		float mouseWheel = ImGui::GetIO().MouseWheel;
+		if (mouseWheel < 0.f)
+		{
+			_incrementDebugAddress(0x10);
+		}
+		else if (mouseWheel > 0.f)
+		{
+			_incrementDebugAddress(-0x10);
+		}
+
+		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
+		{
+			_incrementDebugAddress(-(int32_t)(rowCount * 0x10));
+		}
+		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
+		{
+			_incrementDebugAddress((int32_t)(rowCount * 0x10));
+		}
+
+		char addressBuffer[11] = {};
+		sprintf(addressBuffer, "0x%08X\0", m_debugAddress);
+		if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
+		{
+			size_t len = strlen(addressBuffer);
+			memcpy(addressBuffer + (10 - len), addressBuffer, len + 1);
+			memset(addressBuffer, '0', (10 - len));
+			addressBuffer[0] = '0';
+			addressBuffer[1] = 'x';
+
+			m_debugAddress = (size_t)strtol(addressBuffer + 2, nullptr, 16);
+			m_debugAddress -= m_debugAddress % 0x10;
+		}
+		ImGui::Separator();
+
+		char memoryBuffer[bytesToRead];
+		SIZE_T bytesRead;
+		void* FBAAddress = (void*)(m_ramStartingAddress + m_debugAddress);
+		ReadProcessMemory(m_FBAProcessHandle, FBAAddress, memoryBuffer, bytesToRead, &bytesRead);
+
+		// DRAW
+		static const float rowHeight = 20.f;
+		static const float addressesColumnWidth = 90.f;
+		static const float byteColumnWidth = 20.f;
+		static const float centralMarginWidth = 15.f;
+
+		ImVec2 basePos = ImGui::GetCursorScreenPos();
+		ImVec2 size = ImVec2(addressesColumnWidth + rowSize * byteColumnWidth + centralMarginWidth, rowHeight * rowCount);
+		ImGui::InvisibleButton("mem_bg", size);
+		char buf[256] = {};
+		ImColor c = IM_COL32(255, 255, 255, 255);
+		for (size_t row = 0; row < rowCount; ++row)
+		{
+			sprintf(buf, "0x%08X", m_debugAddress + row * 0x10);
+			ImGui::GetWindowDrawList()->AddText(ImVec2(basePos.x, basePos.y + row * rowHeight), IM_COL32(255, 255, 255, 127), buf);
+			ImVec2 pos = ImVec2(basePos.x + addressesColumnWidth, basePos.y + row * rowHeight);
+			for (size_t col = 0; col < rowSize; ++col)
+			{
+				sprintf(buf, "%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
+				ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + col * byteColumnWidth + (col >= 0x8 ? centralMarginWidth : 0.f), pos.y), IM_COL32(255, 255, 255, 255), buf);
+			}
+		}
+		/*ImGui::InvisibleButton("##dummy", size);
+		if (ImGui::IsItemActive() && ImGui::IsMouseDragging()) { offset.x += ImGui::GetIO().MouseDelta.x; offset.y += ImGui::GetIO().MouseDelta.y; }
+		ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(90, 90, 120, 255));
+		ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize()*2.0f, ImVec2(pos.x + offset.x, pos.y + offset.y), IM_COL32(255, 255, 255, 255), "Line 1 hello\nLine 2 clip me!", NULL, 0.0f, &clip_rect);*/
+	}
+	ImGui::End();
 }
 
 void TrainingApplication::_saveApplicationData()

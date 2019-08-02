@@ -89,6 +89,8 @@ private:
 
 	bool _findFBAProcessHandle();
 
+	void _updateMemoryDebugger(bool* _showMemoryDebugger);
+
 	void _saveApplicationData();
 	void _loadApplicationData();
 
