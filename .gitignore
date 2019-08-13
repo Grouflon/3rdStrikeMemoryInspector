@@ -4,3 +4,6 @@ enc_temp_folder
 bin
 obj
 .vs
+imgui.ini
+data/application.data
+data/training.data

@@ -10,6 +10,25 @@
 typedef void* HANDLE;
 class TrainingApplication;
 
+#define ADDRESS_UNDEFINED ~size_t(0)
+
+enum GameInput
+{
+	GameInput_Coin,
+	GameInput_Start,
+	GameInput_Up,
+	GameInput_Down,
+	GameInput_Left,
+	GameInput_Right,
+	GameInput_LP,
+	GameInput_MP,
+	GameInput_HP,
+	GameInput_LK,
+	GameInput_MK,
+	GameInput_HK,
+	GameInput_COUNT
+};
+
 ref class TrainingThreadHelper
 {
 public:
@@ -36,6 +55,10 @@ struct TrainingApplicationData
 	int windowY = 100;
 	int windowW = 400;
 	int windowH = 700;
+	size_t debugAddress = 0;
+	size_t selectionBeginAddress = ~size_t(0);
+	size_t selectionEndAddress = ~size_t(0);
+
 
 	MIRROR_CLASS(TrainingApplicationData)
 	(
@@ -47,6 +70,7 @@ struct TrainingApplicationData
 		MIRROR_MEMBER(windowY)
 		MIRROR_MEMBER(windowW)
 		MIRROR_MEMBER(windowH)
+		MIRROR_MEMBER(debugAddress)
 	);
 };
 
@@ -63,6 +87,20 @@ struct TrainingModeData
 		MIRROR_MEMBER(lockTimer)
 		MIRROR_MEMBER(infiniteLife)
 		MIRROR_MEMBER(disableMusic)
+	);
+};
+
+struct MemoryLabel
+{
+	std::string name;
+	size_t beginAddress = ADDRESS_UNDEFINED;
+	size_t endAddress = ADDRESS_UNDEFINED;
+
+	MIRROR_CLASS(MemoryLabel)
+	(
+		MIRROR_MEMBER(name)
+		MIRROR_MEMBER(beginAddress)
+		MIRROR_MEMBER(endAddress)
 	);
 };
 
@@ -97,6 +135,11 @@ private:
 	void _saveTrainingData();
 	void _loadTrainingData();
 
+	void _saveMemoryLabels();
+	void _loadMemoryLabels();
+
+	void _calibrateP2InputMapping();
+
 	HWND m_windowHandle = nullptr;
 
 	bool m_isDettachRequested = false;
@@ -115,10 +158,14 @@ private:
 
 	mirror::BinarySerializer m_dataSerializer;
 
+	int m_p2Keys[GameInput_COUNT] = {};
 
 	TrainingApplicationData m_applicationData;
 	TrainingModeData m_trainingData;
+	std::vector<MemoryLabel> m_memoryLabels;
 
-	char lol[128] = {};
+	uint8_t* m_memoryBuffer = nullptr;
+	size_t m_memoryBufferSize = 0;
 
+	int m_selectedLabel = -1;
 };

@@ -1,21 +1,25 @@
 #include "TrainingApplication.h"
 
-
-
 #include <windows.h>
 #include <imgui.h>
 #include <cstdio>
 #include <algorithm>
+#include <filesystem>
+
+#include <Log.h>
+#include <Keys.h>
 
 using namespace System;
 using namespace System::Diagnostics;
 using namespace System::Threading;
 
-static const char* s_applicationDataFileName = "application.data";
-static const char* s_trainingDataFileName = "training.data";
+static const char* s_applicationDataFileName = "data/application.data";
+static const char* s_trainingDataFileName = "data/training.data";
+static const char* s_memoryLabelsFileName = "data/labels.data";
 
 char s_calibrationSequence[] = { 0x78, 0x00, 0x79, 0x00, 0x76, 0x00 };
 size_t s_calibrationSequenceOffset = 0x160B1B94 - 0x161091C0 - 0x02011377;
+
 
 enum class GlobalInputFlags : uint32_t
 {
@@ -136,7 +140,6 @@ size_t FindRAMStartAddress(HANDLE _processHandle)
 	return RAMStartAddress;
 }
 
-static char* m_memoryBuffer = nullptr;
 static char* m_memoryMapData = nullptr;
 static size_t m_memoryMapSize = 0;
 
@@ -154,23 +157,30 @@ void TrainingApplication::initialize(HWND _windowHandle)
 {
 	assert(_windowHandle);
 	m_windowHandle = _windowHandle;
-	m_memoryBuffer = (char*)malloc(s_maxAddress);
+
+	m_memoryBufferSize = s_maxAddress;
+	m_memoryBuffer = (uint8_t*)malloc(m_memoryBufferSize);
 
 	m_lock = gcnew SpinLock();
 
 	_loadApplicationData();
 	_loadTrainingData();
+	_loadMemoryLabels();
 }
 
 
 void TrainingApplication::shutdown()
 {
+	_saveTrainingData();
+	_saveApplicationData();
+
 	_dettachFromFBA();
 
 	m_threads = nullptr;
 
 	free(m_memoryBuffer);
 	m_memoryBuffer = nullptr;
+	m_memoryBufferSize = 0;
 }
 
 static uint16_t m_p1GlobalInputFlags;
@@ -183,6 +193,20 @@ static bool m_p2CoinDown;
 
 void TrainingApplication::onFrameBegin()
 {
+	SIZE_T bytesRead = 0;
+	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
+
+	HWND activeWindow = GetForegroundWindow();
+	if (activeWindow == (HWND)(void*)(m_FBAProcess->MainWindowHandle))
+	{
+		// INJECT INPUT HERE
+		INPUT inputs[2] = {};
+		inputs[0].type = INPUT_KEYBOARD;
+		inputs[0].ki.wVk = m_p2Keys[GameInput_LP];
+		inputs[0].ki.dwFlags = m_currentFrame % 2 ? 0 : KEYEVENTF_KEYUP;
+		UINT result = SendInput(1, inputs, sizeof(INPUT));
+	}
+
 	if (m_trainingData.enabled)
 	{
 		if (m_trainingData.lockTimer) _writeByte(memoryMap::timer, 100);
@@ -196,7 +220,7 @@ void TrainingApplication::onFrameBegin()
 			_writeByte(0x02078D06, 0x00);
 		}
 		else
-		{
+		{ 
 			_writeByte(0x02078D06, 0x06);
 		}
 	}
@@ -292,6 +316,12 @@ void TrainingApplication::update()
 
 	if (_isAttachedToFBA())
 	{
+		// Joystick emulation doc
+		// https://stackoverflow.com/questions/28662875/c-sending-joystick-directional-input-to-program/28687064#28687064
+		// http://vjoystick.sourceforge.net/site/index.php/dev/87-writing-a-feeder-application2
+		// https://os.mbed.com/users/wim/notebook/usb-joystick-device/
+		// https://github.com/jkuhlmann/gainput
+
 		// WINDOW DOCKING
 		if (m_applicationData.dockingMode != DockingMode::Undocked)
 		{
@@ -494,6 +524,11 @@ void TrainingApplication::watchFrameChange()
 		uint32_t currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
 		if (currentFrame != m_currentFrame)
 		{
+			if (currentFrame != m_currentFrame + 1)
+			{
+				LOG_ERROR("Missed %d frames", (currentFrame - m_currentFrame) - 1)
+			}
+
 			m_currentFrame = currentFrame;
 			onFrameBegin();
 		}
@@ -515,7 +550,7 @@ void TrainingApplication::_attachToFBA()
 	if (!_findFBAProcessHandle())
 	{
 		if (!m_applicationData.autoAttach)
-			printf("Error: Failed to find FBA process.\n");
+			LOG_ERROR("Error: Failed to find FBA process.");
 
 		return;
 	}
@@ -524,12 +559,14 @@ void TrainingApplication::_attachToFBA()
 	if (!m_ramStartingAddress)
 	{
 		if (!m_applicationData.autoAttach)
-			printf("Error: Failed to find RAM starting address.\n");
+			LOG_ERROR("Error: Failed to find RAM starting address.");
 
 		return;
 	}
 
 	m_currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
+
+	_calibrateP2InputMapping();
 
 	m_threads = gcnew TrainingThreadHelper();
 	m_threads->watchFrameThread = gcnew Thread(gcnew ThreadStart(m_threads, &TrainingThreadHelper::watchFrameThreadMain));
@@ -569,13 +606,13 @@ char TrainingApplication::_readByte(size_t _address)
 
 void TrainingApplication::_incrementDebugAddress(int64_t _increment)
 {
-	if (_increment < 0 && (_increment * -1) > m_debugAddress)
-		m_debugAddress = 0;
+	if (_increment < 0 && (_increment * -1) > m_applicationData.debugAddress)
+		m_applicationData.debugAddress = 0;
 	else
 	{
-		m_debugAddress += _increment;
-		if (m_debugAddress > s_maxAddress)
-			m_debugAddress = s_maxAddress;
+		m_applicationData.debugAddress += _increment;
+		if (m_applicationData.debugAddress > s_maxAddress)
+			m_applicationData.debugAddress = s_maxAddress;
 	}
 }
 
@@ -613,11 +650,35 @@ bool TrainingApplication::_findFBAProcessHandle()
 
 void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 {
-	static const size_t rowSize = 0x10;
+	static const size_t colCount = 0x10;
 	static const size_t rowCount = 25;
-	static const size_t bytesToRead = rowSize * rowCount;
+	static const size_t bytesToRead = colCount * rowCount;
 
-	ImGui::Begin("Memory Debugger", _showMemoryDebugger);
+	static const float rowMarginHeight = 4.f;
+	static const float addressesMarginWidth = 15.f;
+	static const float byteMarginWidth = 5.f;
+	static const float centralMarginWidth = 15.f;
+	static const float detailsColumnWidth = 190.f;
+	static const float separatorWidth = 15.f;
+
+	char buf[256] = {};
+
+	auto sanitizeAddressString = [](char _string[11])
+	{
+		size_t len = strlen(_string);
+		memcpy(_string + (10 - len), _string, len + 1);
+		memset(_string, '0', (10 - len));
+		_string[0] = '0';
+		_string[1] = 'x';
+	};
+
+	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
+	ImVec2 byteSize = ImGui::CalcTextSize("00");
+	float rowHeight = byteSize.y + rowMarginHeight;
+	ImVec2 totalSize = ImVec2(detailsColumnWidth + separatorWidth + addressSize.x + addressesMarginWidth + 0x10 * (byteSize.x + byteMarginWidth) + centralMarginWidth, rowHeight * rowCount);
+
+	ImGui::SetNextWindowSize(ImVec2(totalSize.x + 16.f, totalSize.y + 16.f + 19.f));
+	ImGui::Begin("Memory Debugger", _showMemoryDebugger, ImGuiWindowFlags_NoResize);
 	if (!_isAttachedToFBA())
 	{
 		ImGui::Text("Not attached to FBA");
@@ -628,63 +689,244 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 		if (mouseWheel < 0.f)
 		{
 			_incrementDebugAddress(0x10);
+			_saveApplicationData();
 		}
 		else if (mouseWheel > 0.f)
 		{
 			_incrementDebugAddress(-0x10);
+			_saveApplicationData();
 		}
 
 		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
 		{
 			_incrementDebugAddress(-(int32_t)(rowCount * 0x10));
+			_saveApplicationData();
 		}
 		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
 		{
 			_incrementDebugAddress((int32_t)(rowCount * 0x10));
+			_saveApplicationData();
 		}
 
+		ImGui::BeginChild("details", ImVec2(detailsColumnWidth, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
 		char addressBuffer[11] = {};
-		sprintf(addressBuffer, "0x%08X\0", m_debugAddress);
-		if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
-		{
-			size_t len = strlen(addressBuffer);
-			memcpy(addressBuffer + (10 - len), addressBuffer, len + 1);
-			memset(addressBuffer, '0', (10 - len));
-			addressBuffer[0] = '0';
-			addressBuffer[1] = 'x';
 
-			m_debugAddress = (size_t)strtol(addressBuffer + 2, nullptr, 16);
-			m_debugAddress -= m_debugAddress % 0x10;
+
+		// BASE ADDRESS
+		{
+			ImGui::PushItemWidth(addressSize.x + 12.f);
+			sprintf(addressBuffer, "0x%08X\0", m_applicationData.debugAddress);
+			if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
+			{
+				sanitizeAddressString(addressBuffer);
+
+				m_applicationData.debugAddress = size_t(strtol(addressBuffer, nullptr, 0));
+				m_applicationData.debugAddress -= m_applicationData.debugAddress % 0x10;
+
+				_saveApplicationData();
+			}
+			ImGui::PopItemWidth();
 		}
+
 		ImGui::Separator();
 
-		char memoryBuffer[bytesToRead];
-		SIZE_T bytesRead;
-		void* FBAAddress = (void*)(m_ramStartingAddress + m_debugAddress);
-		ReadProcessMemory(m_FBAProcessHandle, FBAAddress, memoryBuffer, bytesToRead, &bytesRead);
+		// MEMORY LABELS
+		{
+			ImGui::PushStyleColor(ImGuiCol_ChildWindowBg, IM_COL32(255, 255, 255, 20));
+			ImGui::BeginChild("MemoryLabels", ImVec2(ImGui::GetWindowContentRegionWidth(), 150.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+			for (auto it = m_memoryLabels.begin(); it != m_memoryLabels.end();)
+			{
+				int i = it - m_memoryLabels.begin();
+				MemoryLabel& label = *it;
+				if (ImGui::Selectable(label.name.c_str(), i == m_selectedLabel))
+				{
+					if (m_selectedLabel != i)
+					{
+						m_selectedLabel = i;
+
+						m_applicationData.debugAddress = m_memoryLabels[m_selectedLabel].beginAddress;
+						m_applicationData.debugAddress -= m_applicationData.debugAddress % 0x10;
+					}
+					else
+					{
+						m_selectedLabel = -1;
+					}
+				}
+				char buf[32];
+				sprintf(buf, "memorylabel%d", i);
+				bool deleted = false;
+				if (ImGui::BeginPopupContextItem(buf))
+				{
+					if (ImGui::Selectable("Delete"))
+					{
+						it = m_memoryLabels.erase(it);
+						deleted = true;
+						_saveMemoryLabels();
+					}
+					ImGui::EndPopup();
+				}
+
+				if (!deleted)
+					++it;
+			}
+			ImGui::EndChild();
+			ImGui::PopStyleColor();
+		}
+		
+		ImGui::Separator();
+
+		ImGui::EndChild();
+
+		ImGui::SameLine(0.0f, separatorWidth);
+
+		ImGui::BeginChild("memory", ImVec2(), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
 
 		// DRAW
-		static const float rowHeight = 20.f;
-		static const float addressesColumnWidth = 90.f;
-		static const float byteColumnWidth = 20.f;
-		static const float centralMarginWidth = 15.f;
-
 		ImVec2 basePos = ImGui::GetCursorScreenPos();
-		ImVec2 size = ImVec2(addressesColumnWidth + rowSize * byteColumnWidth + centralMarginWidth, rowHeight * rowCount);
+		ImVec2 size = ImVec2(addressSize.x + addressesMarginWidth + colCount * (byteSize.x + byteMarginWidth) + centralMarginWidth, rowHeight * rowCount);
+
+		ImVec2 firstTableBasePos = ImVec2(basePos.x + addressSize.x + addressesMarginWidth, basePos.y);
+		ImVec2 secondTableBasePos = ImVec2(firstTableBasePos.x + (byteSize.x + byteMarginWidth) * 0x8 + centralMarginWidth, basePos.y);
+		ImVec2 tableSize = ImVec2((byteSize.x + byteMarginWidth) * 0x8, rowHeight * rowCount);
+
+		auto computeAddressAtPos = [=](const ImVec2& _pos) -> size_t
+		{
+			size_t address = ADDRESS_UNDEFINED;
+			if (_pos.x >= firstTableBasePos.x && _pos.x <= firstTableBasePos.x + tableSize.x && _pos.y >= firstTableBasePos.y && _pos.y <= firstTableBasePos.y + tableSize.y)
+			{
+				int addressX = (_pos.x - firstTableBasePos.x) / (byteSize.x + byteMarginWidth);
+				int addressY = (_pos.y - firstTableBasePos.y) / (byteSize.y + rowMarginHeight);
+
+				if (_pos.x <= firstTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
+					&& _pos.y <= firstTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
+				{
+					address = m_applicationData.debugAddress + (0x10 * addressY) + addressX;
+				}
+			}
+			else if (_pos.x >= secondTableBasePos.x && _pos.x <= secondTableBasePos.x + tableSize.x && _pos.y >= secondTableBasePos.y && _pos.y <= secondTableBasePos.y + tableSize.y)
+			{
+				int addressX = (_pos.x - secondTableBasePos.x) / (byteSize.x + byteMarginWidth);
+				int addressY = (_pos.y - secondTableBasePos.y) / (byteSize.y + rowMarginHeight);
+
+				if (_pos.x <= secondTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
+					&& _pos.y <= secondTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
+				{
+					address = m_applicationData.debugAddress + (0x10 * addressY) + addressX + 0x08;
+				}
+			}
+			return address;
+		};
+
+		ImVec2 mp = ImGui::GetIO().MousePos;
+		size_t hoveredAddress = computeAddressAtPos(mp);
+		bool isMouseOverMemory = mp.x >= basePos.x && mp.x <= basePos.x + size.x && mp.y >= basePos.y && mp.y <= basePos.y + size.y;
+		bool isMemorySelectionPopupOpen = ImGui::IsPopupOpen("memorySelection");
+
+		// SELECTION LOGIC
+		if (isMouseOverMemory && !isMemorySelectionPopupOpen)
+		{
+			if (ImGui::IsMouseClicked(0))
+			{
+				if (hoveredAddress == ADDRESS_UNDEFINED)
+				{
+					m_applicationData.selectionBeginAddress = ADDRESS_UNDEFINED;
+					m_applicationData.selectionEndAddress = ADDRESS_UNDEFINED;
+				}
+				else
+				{
+					m_applicationData.selectionBeginAddress = hoveredAddress;
+					m_applicationData.selectionEndAddress = hoveredAddress;
+				}
+			}
+			if (ImGui::IsMouseDown(0) && m_applicationData.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress != ADDRESS_UNDEFINED)
+			{
+				m_applicationData.selectionEndAddress = hoveredAddress;
+			}
+		}
+
 		ImGui::InvisibleButton("mem_bg", size);
-		char buf[256] = {};
 		ImColor c = IM_COL32(255, 255, 255, 255);
 		for (size_t row = 0; row < rowCount; ++row)
 		{
-			sprintf(buf, "0x%08X", m_debugAddress + row * 0x10);
+			sprintf(buf, "0x%08X", m_applicationData.debugAddress + row * 0x10);
 			ImGui::GetWindowDrawList()->AddText(ImVec2(basePos.x, basePos.y + row * rowHeight), IM_COL32(255, 255, 255, 127), buf);
-			ImVec2 pos = ImVec2(basePos.x + addressesColumnWidth, basePos.y + row * rowHeight);
-			for (size_t col = 0; col < rowSize; ++col)
+			ImVec2 pos = ImVec2(basePos.x + addressSize.x + addressesMarginWidth, basePos.y + row * rowHeight);
+			for (size_t col = 0; col < colCount; ++col)
 			{
-				sprintf(buf, "%02X", (uint8_t)(memoryBuffer[row * 0x10 + col]));
-				ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + col * byteColumnWidth + (col >= 0x8 ? centralMarginWidth : 0.f), pos.y), IM_COL32(255, 255, 255, 255), buf);
+				size_t byteRelativeAddress = row * 0x10 + col;
+				size_t byteAddress = m_applicationData.debugAddress + byteRelativeAddress;
+				ImVec2 bytePos = ImVec2(pos.x + col * (byteSize.x + byteMarginWidth) + (col >= 0x8 ? centralMarginWidth : 0.f), pos.y);
+				if (byteAddress >= m_applicationData.selectionBeginAddress && byteAddress <= m_applicationData.selectionEndAddress)
+				{
+					ImU32 col = isMouseOverMemory && ImGui::IsMouseDown(0) && !isMemorySelectionPopupOpen ? IM_COL32(255, 255, 255, 110) : IM_COL32(0, 255, 255, 110);
+					ImGui::GetWindowDrawList()->AddRectFilled(bytePos, ImVec2(bytePos.x + byteSize.x, bytePos.y + byteSize.y), col);
+				}
+
+				sprintf(buf, "%02X", (uint8_t)(m_memoryBuffer[byteAddress]));
+				ImGui::GetWindowDrawList()->AddText(bytePos, IM_COL32(255, 255, 255, 255), buf);
 			}
 		}
+
+		if (ImGui::IsMouseReleased(1) && hoveredAddress >= m_applicationData.selectionBeginAddress && hoveredAddress <= m_applicationData.selectionEndAddress)
+		{
+			ImGui::OpenPopup("memorySelection");
+		}
+		static char s_labelBuf[128] = "";
+		if (ImGui::BeginPopup("memorySelection"))
+		{
+			ImGui::PushItemWidth(addressSize.x + 12.f);
+			sprintf(addressBuffer, "0x%08X\0", m_applicationData.selectionBeginAddress);
+			ImGui::PushID("SelectionBegin");
+			if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
+			{
+				sanitizeAddressString(addressBuffer);
+				m_applicationData.selectionBeginAddress = size_t(strtol(addressBuffer, nullptr, 0));
+			}
+			ImGui::PopID();
+
+			ImGui::SameLine();
+			ImGui::Text(":");
+			ImGui::SameLine();
+
+			sprintf(addressBuffer, "0x%08X\0", m_applicationData.selectionEndAddress);
+			ImGui::PushID("SelectionEnd");
+			if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
+			{
+				sanitizeAddressString(addressBuffer);
+				m_applicationData.selectionEndAddress = size_t(strtol(addressBuffer, nullptr, 0));
+				if (m_applicationData.selectionEndAddress < m_applicationData.selectionBeginAddress)
+					m_applicationData.selectionEndAddress = m_applicationData.selectionBeginAddress;
+			}
+			ImGui::PopID();
+			ImGui::PopItemWidth();
+
+			ImGui::PushItemWidth(150.f);
+			ImGui::InputText("Label", s_labelBuf, 127);
+			ImGui::PopItemWidth();
+
+			if (ImGui::Button("New Memory Label"))
+			{
+				MemoryLabel label;
+				label.name = s_labelBuf;
+				label.beginAddress = m_applicationData.selectionBeginAddress;
+				label.endAddress = m_applicationData.selectionEndAddress;
+				m_memoryLabels.push_back(label);
+
+				_saveMemoryLabels();
+
+				*s_labelBuf = 0;
+
+				ImGui::CloseCurrentPopup();
+			}
+
+			ImGui::EndPopup();
+		}
+		else
+		{
+			*s_labelBuf = 0;
+		}
+
+		ImGui::EndChild();
 		/*ImGui::InvisibleButton("##dummy", size);
 		if (ImGui::IsItemActive() && ImGui::IsMouseDragging()) { offset.x += ImGui::GetIO().MouseDelta.x; offset.y += ImGui::GetIO().MouseDelta.y; }
 		ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(90, 90, 120, 255));
@@ -695,82 +937,106 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 
 void TrainingApplication::_saveApplicationData()
 {
-	m_dataSerializer.beginWrite();
-	m_dataSerializer.serialize("applicationData", m_applicationData);
-	m_dataSerializer.endWrite();
-
-	const void* data = nullptr;
-	size_t dataSize = 0u;
-	m_dataSerializer.getWriteData(data, dataSize);
-
-	FILE* fp = fopen(s_applicationDataFileName, "w");
-	fwrite(data, dataSize, 1, fp);
-	fclose(fp);
+	mirror::SaveToFile(m_applicationData, s_applicationDataFileName);
 }
 
 void TrainingApplication::_loadApplicationData()
 {
-	size_t dataSize = 0u;
-	void* data = nullptr;
-
-	FILE* fp = fopen(s_applicationDataFileName, "r");
-	if (!fp)
-		return;
-
-	fseek(fp, 0, SEEK_END);
-	dataSize = ftell(fp);
-	fseek(fp, 0, SEEK_SET);
-
-	data = malloc(dataSize);
-
-	fread(data, dataSize, 1, fp);
-	fclose(fp);
-
-	m_dataSerializer.beginRead(data, dataSize);
-	m_dataSerializer.serialize("applicationData", m_applicationData);
-	m_dataSerializer.endRead();
-
-	free(data);
+	mirror::LoadFromFile(m_applicationData, s_applicationDataFileName);
 
 	SetWindowPos(m_windowHandle, nullptr, m_applicationData.windowX, m_applicationData.windowY, m_applicationData.windowW, m_applicationData.windowH, SWP_NOZORDER);
 }
 
 void TrainingApplication::_saveTrainingData()
 {
-	m_dataSerializer.beginWrite();
-	m_dataSerializer.serialize("trainingData", m_trainingData);
-	m_dataSerializer.endWrite();
-
-	const void* data = nullptr;
-	size_t dataSize = 0u;
-	m_dataSerializer.getWriteData(data, dataSize);
-
-	FILE* fp = fopen(s_trainingDataFileName, "w");
-	fwrite(data, dataSize, 1, fp);
-	fclose(fp);
+	mirror::SaveToFile(m_trainingData, s_trainingDataFileName);
 }
 
 void TrainingApplication::_loadTrainingData()
 {
-	size_t dataSize = 0u;
-	void* data = nullptr;
+	mirror::LoadFromFile(m_trainingData, s_trainingDataFileName);
+}
 
-	FILE* fp = fopen(s_trainingDataFileName, "r");
-	if (!fp)
+void TrainingApplication::_saveMemoryLabels()
+{
+	mirror::SaveToFile(m_memoryLabels, s_memoryLabelsFileName);
+}
+
+void TrainingApplication::_loadMemoryLabels()
+{
+	mirror::LoadFromFile(m_memoryLabels, s_memoryLabelsFileName);
+}
+
+void TrainingApplication::_calibrateP2InputMapping()
+{
+	assert(m_FBAProcessHandle);
+	
+	char filename[MAX_PATH];
+	sprintf_s(filename, "%ws", PtrToStringChars(m_FBAProcess->MainModule->FileName));
+
+	size_t pathLen = strlen(filename);
+	bool foundRoot = false;
+
+	for (int i = pathLen - 1; i > 0; --i)
+	{
+		if (filename[i] == '\\')
+		{
+			filename[i + 1] = 0;
+			foundRoot = true;
+			break;
+		}
+	}
+	if (!foundRoot)
+	{
+		LOG_ERROR("Failed to find Fightcade root folder.");
 		return;
+	}
 
+	char configFilePath[MAX_PATH];
+	sprintf(configFilePath, "%sconfig\\games\\sfiii3n.ini", filename);
+
+	FILE* fp = nullptr;
+	if (fopen_s(&fp, configFilePath, "r") != 0)
+	{
+		LOG_ERROR("Failed to open \"%s\".", configFilePath);
+		return;
+	}
 	fseek(fp, 0, SEEK_END);
-	dataSize = ftell(fp);
+	size_t dataSize = ftell(fp);
 	fseek(fp, 0, SEEK_SET);
-
-	data = malloc(dataSize);
-
+	char* data = (char*)malloc(dataSize);
 	fread(data, dataSize, 1, fp);
 	fclose(fp);
 
-	m_dataSerializer.beginRead(data, dataSize);
-	m_dataSerializer.serialize("trainingData", m_trainingData);
-	m_dataSerializer.endRead();
+	auto seekInputKeyCode = [](const char* _seekInput, const char* _data, size_t _dataSize) -> int
+	{
+		const char* cursor = strstr(_data, _seekInput);
+		if (!cursor)
+			return 0x00;
+
+		const char* lineEnd = strstr(cursor, "\n");
+		if (!lineEnd)
+			lineEnd = _data + _dataSize;
+
+		cursor = strstr(cursor, "switch");
+		if (!cursor || cursor > lineEnd)
+			return 0x00;
+
+		return DInputKeyCodeToVirtualKeyCode(static_cast<int>(strtol(cursor + 7, nullptr, 0)));
+	};
+
+	m_p2Keys[GameInput_Coin] = seekInputKeyCode("P2 Coin", data, dataSize);
+	m_p2Keys[GameInput_Start] = seekInputKeyCode("P2 Start", data, dataSize);
+	m_p2Keys[GameInput_Up] = seekInputKeyCode("P2 Up", data, dataSize);
+	m_p2Keys[GameInput_Down] = seekInputKeyCode("P2 Down", data, dataSize);
+	m_p2Keys[GameInput_Left] = seekInputKeyCode("P2 Left", data, dataSize);
+	m_p2Keys[GameInput_Right] = seekInputKeyCode("P2 Right", data, dataSize);
+	m_p2Keys[GameInput_LP] = seekInputKeyCode("P2 Weak punch", data, dataSize);
+	m_p2Keys[GameInput_MP] = seekInputKeyCode("P2 Medium punch", data, dataSize);
+	m_p2Keys[GameInput_HP] = seekInputKeyCode("P2 Strong punch", data, dataSize);
+	m_p2Keys[GameInput_LK] = seekInputKeyCode("P2 Weak kick", data, dataSize);
+	m_p2Keys[GameInput_MK] = seekInputKeyCode("P2 Medium kick", data, dataSize);
+	m_p2Keys[GameInput_HK] = seekInputKeyCode("P2 Strong kick", data, dataSize);
 
 	free(data);
 }
