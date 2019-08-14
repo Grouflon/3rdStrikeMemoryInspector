@@ -161,6 +161,7 @@
     <ClInclude Include="extern\imgui\imstb_rectpack.h" />
     <ClInclude Include="extern\imgui\imstb_textedit.h" />
     <ClInclude Include="extern\imgui\imstb_truetype.h" />
+    <ClInclude Include="extern\imgui\misc\cpp\imgui_stdlib.h" />
     <ClInclude Include="extern\mirror\mirror.h" />
     <ClInclude Include="extern\mirror\tools\BinarySerializer.h" />
     <ClInclude Include="src\Keys.h" />
@@ -175,6 +176,7 @@
     <ClCompile Include="extern\imgui\imgui_demo.cpp" />
     <ClCompile Include="extern\imgui\imgui_draw.cpp" />
     <ClCompile Include="extern\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="extern\imgui\misc\cpp\imgui_stdlib.cpp" />
     <ClCompile Include="extern\mirror\mirror.cpp" />
     <ClCompile Include="extern\mirror\tools\BinarySerializer.cpp" />
     <ClCompile Include="src\3rdTraining.cpp" />

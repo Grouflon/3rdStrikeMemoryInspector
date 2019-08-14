@@ -1,10 +1,12 @@
 #include "TrainingApplication.h"
 
 #include <windows.h>
-#include <imgui.h>
 #include <cstdio>
 #include <algorithm>
 #include <filesystem>
+
+#include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
 
 #include <Log.h>
 #include <Keys.h>
@@ -196,7 +198,7 @@ void TrainingApplication::onFrameBegin()
 	SIZE_T bytesRead = 0;
 	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
 
-	HWND activeWindow = GetForegroundWindow();
+	/*HWND activeWindow = GetForegroundWindow();
 	if (activeWindow == (HWND)(void*)(m_FBAProcess->MainWindowHandle))
 	{
 		// INJECT INPUT HERE
@@ -205,7 +207,7 @@ void TrainingApplication::onFrameBegin()
 		inputs[0].ki.wVk = m_p2Keys[GameInput_LP];
 		inputs[0].ki.dwFlags = m_currentFrame % 2 ? 0 : KEYEVENTF_KEYUP;
 		UINT result = SendInput(1, inputs, sizeof(INPUT));
-	}
+	}*/
 
 	if (m_trainingData.enabled)
 	{
@@ -685,18 +687,6 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 	}
 	else
 	{
-		float mouseWheel = ImGui::GetIO().MouseWheel;
-		if (mouseWheel < 0.f)
-		{
-			_incrementDebugAddress(0x10);
-			_saveApplicationData();
-		}
-		else if (mouseWheel > 0.f)
-		{
-			_incrementDebugAddress(-0x10);
-			_saveApplicationData();
-		}
-
 		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
 		{
 			_incrementDebugAddress(-(int32_t)(rowCount * 0x10));
@@ -733,19 +723,23 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 		// MEMORY LABELS
 		{
 			ImGui::PushStyleColor(ImGuiCol_ChildWindowBg, IM_COL32(255, 255, 255, 20));
-			ImGui::BeginChild("MemoryLabels", ImVec2(ImGui::GetWindowContentRegionWidth(), 150.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-			for (auto it = m_memoryLabels.begin(); it != m_memoryLabels.end();)
+			ImGui::BeginChild("MemoryLabels", ImVec2(ImGui::GetWindowContentRegionWidth(), 350.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+			static std::vector<MemoryLabel> s_memoryLabels;
+			s_memoryLabels = m_memoryLabels;
+			for (int i = 0; i < s_memoryLabels.size(); ++i)
 			{
-				int i = it - m_memoryLabels.begin();
-				MemoryLabel& label = *it;
+				MemoryLabel& label = s_memoryLabels[i];
 				if (ImGui::Selectable(label.name.c_str(), i == m_selectedLabel))
 				{
 					if (m_selectedLabel != i)
 					{
 						m_selectedLabel = i;
 
-						m_applicationData.debugAddress = m_memoryLabels[m_selectedLabel].beginAddress;
-						m_applicationData.debugAddress -= m_applicationData.debugAddress % 0x10;
+						if (s_memoryLabels[m_selectedLabel].beginAddress < m_applicationData.debugAddress || s_memoryLabels[m_selectedLabel].beginAddress > m_applicationData.debugAddress + rowCount * colCount)
+						{
+							m_applicationData.debugAddress = s_memoryLabels[m_selectedLabel].beginAddress - rowCount * (colCount - 1) / 2;
+							m_applicationData.debugAddress -= m_applicationData.debugAddress % 0x10;
+						}
 					}
 					else
 					{
@@ -754,34 +748,55 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 				}
 				char buf[32];
 				sprintf(buf, "memorylabel%d", i);
-				bool deleted = false;
 				if (ImGui::BeginPopupContextItem(buf))
 				{
+					if (ImGui::InputText("name", &m_memoryLabels[i].name, ImGuiInputTextFlags_EnterReturnsTrue))
+					{
+						_saveMemoryLabels();
+					}
+
+					ImGui::Separator();
+					if (ImGui::Button("^"))
+					{
+						if (i > 0)
+						{
+							m_memoryLabels[i - 1] = s_memoryLabels[i];
+							m_memoryLabels[i] = s_memoryLabels[i - 1];
+							_saveMemoryLabels();
+							ImGui::CloseCurrentPopup();
+						}
+					}
+					ImGui::SameLine();
+					if (ImGui::Button("v"))
+					{
+						if (i < s_memoryLabels.size() - 1)
+						{
+							m_memoryLabels[i + 1] = s_memoryLabels[i];
+							m_memoryLabels[i] = s_memoryLabels[i + 1];
+							_saveMemoryLabels();
+							ImGui::CloseCurrentPopup();
+						}
+					}
+					ImGui::Separator();
 					if (ImGui::Selectable("Delete"))
 					{
-						it = m_memoryLabels.erase(it);
-						deleted = true;
+						m_memoryLabels.erase(m_memoryLabels.begin() + i);
 						_saveMemoryLabels();
 					}
 					ImGui::EndPopup();
 				}
-
-				if (!deleted)
-					++it;
 			}
 			ImGui::EndChild();
 			ImGui::PopStyleColor();
 		}
 		
-		ImGui::Separator();
-
 		ImGui::EndChild();
 
 		ImGui::SameLine(0.0f, separatorWidth);
 
 		ImGui::BeginChild("memory", ImVec2(), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
 
-		// DRAW
+		// MEMORY TABLE
 		ImVec2 basePos = ImGui::GetCursorScreenPos();
 		ImVec2 size = ImVec2(addressSize.x + addressesMarginWidth + colCount * (byteSize.x + byteMarginWidth) + centralMarginWidth, rowHeight * rowCount);
 
@@ -822,6 +837,47 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 		bool isMouseOverMemory = mp.x >= basePos.x && mp.x <= basePos.x + size.x && mp.y >= basePos.y && mp.y <= basePos.y + size.y;
 		bool isMemorySelectionPopupOpen = ImGui::IsPopupOpen("memorySelection");
 
+		// PRECOMPUTE BYTE INFO
+		struct ByteInfo
+		{
+			bool hovered = false;
+			bool beingSelected = false;
+			bool selected = false;
+			std::vector<int> labels;
+		};
+		static std::vector<ByteInfo> s_byteInfo;
+		s_byteInfo.resize(colCount * rowCount);
+		for (int i = 0; i < s_byteInfo.size(); ++i)
+		{
+			s_byteInfo[i].hovered = false;
+			s_byteInfo[i].beingSelected = false;
+			s_byteInfo[i].selected = false;
+			s_byteInfo[i].labels.clear();
+
+			size_t address = m_applicationData.debugAddress + i;
+
+			if (address == hoveredAddress)
+				s_byteInfo[i].hovered = true;
+
+			if (address >= m_applicationData.selectionBeginAddress && address <= m_applicationData.selectionEndAddress)
+			{
+				if (ImGui::IsMouseDown(0) && !isMemorySelectionPopupOpen)
+				{
+					s_byteInfo[i].beingSelected = true;
+				}
+				else
+				{
+					s_byteInfo[i].selected = true;
+				}
+			}
+
+			for (int j = 0; j < m_memoryLabels.size(); ++j)
+			{
+				if (address >= m_memoryLabels[j].beginAddress && address <= m_memoryLabels[j].endAddress)
+					s_byteInfo[i].labels.push_back(j);
+			}
+		}
+
 		// SELECTION LOGIC
 		if (isMouseOverMemory && !isMemorySelectionPopupOpen)
 		{
@@ -844,6 +900,7 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 			}
 		}
 
+		// DRAW MEMORY TABLE
 		ImGui::InvisibleButton("mem_bg", size);
 		ImColor c = IM_COL32(255, 255, 255, 255);
 		for (size_t row = 0; row < rowCount; ++row)
@@ -856,18 +913,51 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 				size_t byteRelativeAddress = row * 0x10 + col;
 				size_t byteAddress = m_applicationData.debugAddress + byteRelativeAddress;
 				ImVec2 bytePos = ImVec2(pos.x + col * (byteSize.x + byteMarginWidth) + (col >= 0x8 ? centralMarginWidth : 0.f), pos.y);
-				if (byteAddress >= m_applicationData.selectionBeginAddress && byteAddress <= m_applicationData.selectionEndAddress)
+
+				ImVec2 rectA = bytePos;
+				ImVec2 rectB = ImVec2(bytePos.x + byteSize.x, bytePos.y + byteSize.y);
+				if (s_byteInfo[byteRelativeAddress].hovered)
 				{
-					ImU32 col = isMouseOverMemory && ImGui::IsMouseDown(0) && !isMemorySelectionPopupOpen ? IM_COL32(255, 255, 255, 110) : IM_COL32(0, 255, 255, 110);
-					ImGui::GetWindowDrawList()->AddRectFilled(bytePos, ImVec2(bytePos.x + byteSize.x, bytePos.y + byteSize.y), col);
+					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(255,255,255,40));
+				}
+				if (s_byteInfo[byteRelativeAddress].beingSelected)
+				{
+					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(255, 255, 255, 110));
+				}
+				if (s_byteInfo[byteRelativeAddress].selected)
+				{
+					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(0, 255, 255, 110));
+				}
+
+				
+
+				for (int i = 0; i < s_byteInfo[byteRelativeAddress].labels.size(); ++i)
+				{
+					ImU32 col = 0;
+					if (s_byteInfo[byteRelativeAddress].labels[i] == m_selectedLabel)
+						col = IM_COL32(255, 255, 0, 130);
+					else
+						col = IM_COL32(255, 255, 0, 70);
+
+					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, col);
 				}
 
 				sprintf(buf, "%02X", (uint8_t)(m_memoryBuffer[byteAddress]));
 				ImGui::GetWindowDrawList()->AddText(bytePos, IM_COL32(255, 255, 255, 255), buf);
+
+				if (s_byteInfo[byteRelativeAddress].hovered && !s_byteInfo[byteRelativeAddress].labels.empty())
+				{
+					ImGui::BeginTooltip();
+					for (int i = 0; i < s_byteInfo[byteRelativeAddress].labels.size(); ++i)
+					{
+						ImGui::Text(m_memoryLabels[s_byteInfo[byteRelativeAddress].labels[i]].name.c_str());
+					}
+					ImGui::EndTooltip();
+				}
 			}
 		}
 
-		if (ImGui::IsMouseReleased(1) && hoveredAddress >= m_applicationData.selectionBeginAddress && hoveredAddress <= m_applicationData.selectionEndAddress)
+		if (ImGui::IsMouseReleased(1) && m_applicationData.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress >= m_applicationData.selectionBeginAddress && hoveredAddress <= m_applicationData.selectionEndAddress)
 		{
 			ImGui::OpenPopup("memorySelection");
 		}
@@ -926,11 +1016,25 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 			*s_labelBuf = 0;
 		}
 
+		
+
 		ImGui::EndChild();
-		/*ImGui::InvisibleButton("##dummy", size);
-		if (ImGui::IsItemActive() && ImGui::IsMouseDragging()) { offset.x += ImGui::GetIO().MouseDelta.x; offset.y += ImGui::GetIO().MouseDelta.y; }
-		ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(90, 90, 120, 255));
-		ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize()*2.0f, ImVec2(pos.x + offset.x, pos.y + offset.y), IM_COL32(255, 255, 255, 255), "Line 1 hello\nLine 2 clip me!", NULL, 0.0f, &clip_rect);*/
+
+		// SCROLL
+		if (isMouseOverMemory)
+		{
+			float mouseWheel = ImGui::GetIO().MouseWheel;
+			if (mouseWheel < 0.f)
+			{
+				_incrementDebugAddress(0x10);
+				_saveApplicationData();
+			}
+			else if (mouseWheel > 0.f)
+			{
+				_incrementDebugAddress(-0x10);
+				_saveApplicationData();
+			}
+		}
 	}
 	ImGui::End();
 }
