@@ -120,10 +120,18 @@ private:
 	void _attachToFBA();
 	void _dettachFromFBA();
 
+	// char array size must be at least _digitCount + 3 (for 0x and \0)
+	void _sanitizeAddressString(char* _string, size_t _digitCount) const;
+
 	void _writeByte(size_t _address, char _byte);
 	char _readByte(size_t _address);
 	long long unsigned int _readUnsignedInt(size_t _address, size_t _size);
 	void _incrementDebugAddress(int64_t _increment);
+
+	void _requestMemoryWrite(size_t _address, void* _data, size_t _dataSize, bool _reverse = true);
+	void _resolveMemoryWriteRequests();
+
+	void _copyReverse(const void* _src, void* _dst, size_t _size);
 
 	bool _findFBAProcessHandle();
 
@@ -160,6 +168,8 @@ private:
 
 	int m_p2Keys[GameInput_COUNT] = {};
 
+	bool m_isDraggingSelection = false;
+
 	TrainingApplicationData m_applicationData;
 	TrainingModeData m_trainingData;
 	std::vector<MemoryLabel> m_memoryLabels;
@@ -167,5 +177,14 @@ private:
 	uint8_t* m_memoryBuffer = nullptr;
 	size_t m_memoryBufferSize = 0;
 
+	struct MemoryWriteRequest
+	{
+		size_t address = 0;
+		void* data = nullptr;
+		size_t dataSize = 0;
+	};
+	std::vector<MemoryWriteRequest> m_memoryWriteRequests;
+
 	int m_selectedLabel = -1;
+
 };

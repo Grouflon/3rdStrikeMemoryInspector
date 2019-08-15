@@ -195,6 +195,8 @@ static bool m_p2CoinDown;
 
 void TrainingApplication::onFrameBegin()
 {
+	_resolveMemoryWriteRequests();
+
 	SIZE_T bytesRead = 0;
 	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
 
@@ -592,6 +594,35 @@ void TrainingApplication::_dettachFromFBA()
 	m_FBAProcess = nullptr;
 }
 
+void TrainingApplication::_sanitizeAddressString(char* _string, size_t _digitCount) const
+{
+	char tempString[128];
+	char* xLocation = strstr(_string, "x");
+	char* relevantString = _string;
+	if (xLocation)
+	{
+		relevantString = xLocation + 1;
+	}
+	size_t len = strlen(relevantString);
+	assert(len < 128);
+	strcpy(tempString, relevantString);
+
+	_string[0] = '0';
+	_string[1] = 'x';
+
+	int missingDigitCount = _digitCount - len;
+	if (missingDigitCount > 0)
+	{
+		memset(_string + 2, '0', missingDigitCount);
+	}
+	else
+	{
+		missingDigitCount = 0;
+	}
+	memcpy(_string + 2 + missingDigitCount, tempString + len - (_digitCount - missingDigitCount), (_digitCount - missingDigitCount));
+	_string[_digitCount + 2] = '\0';
+}
+
 void TrainingApplication::_writeByte(size_t _address, char _byte)
 {
 	assert(_isAttachedToFBA());
@@ -615,6 +646,46 @@ void TrainingApplication::_incrementDebugAddress(int64_t _increment)
 		m_applicationData.debugAddress += _increment;
 		if (m_applicationData.debugAddress > s_maxAddress)
 			m_applicationData.debugAddress = s_maxAddress;
+	}
+}
+
+void TrainingApplication::_requestMemoryWrite(size_t _address, void* _data, size_t _dataSize, bool _reverse /*= true*/)
+{
+	MemoryWriteRequest request;
+	request.address = _address;
+	request.data = malloc(_dataSize);
+	request.dataSize = _dataSize;
+
+	if (_reverse)
+	{
+		_copyReverse(_data, request.data, request.dataSize);
+	}
+	else
+	{
+		memcpy(request.data, _data, request.dataSize);
+	}
+
+	m_memoryWriteRequests.push_back(request);
+}
+
+void TrainingApplication::_resolveMemoryWriteRequests()
+{
+	for (MemoryWriteRequest& request : m_memoryWriteRequests)
+	{
+		WriteProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + request.address), request.data, request.dataSize, nullptr);
+		free(request.data);
+	}
+
+	m_memoryWriteRequests.clear();
+}
+
+void TrainingApplication::_copyReverse(const void* _src, void* _dst, size_t _size)
+{
+	const char* src = reinterpret_cast<const char*>(_src);
+	char* dst = reinterpret_cast<char*>(_dst);
+	for (size_t i = 0; i < _size; ++i)
+	{
+		dst[i] = src[_size - 1 - i];
 	}
 }
 
@@ -665,15 +736,6 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 
 	char buf[256] = {};
 
-	auto sanitizeAddressString = [](char _string[11])
-	{
-		size_t len = strlen(_string);
-		memcpy(_string + (10 - len), _string, len + 1);
-		memset(_string, '0', (10 - len));
-		_string[0] = '0';
-		_string[1] = 'x';
-	};
-
 	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
 	ImVec2 byteSize = ImGui::CalcTextSize("00");
 	float rowHeight = byteSize.y + rowMarginHeight;
@@ -708,7 +770,7 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 			sprintf(addressBuffer, "0x%08X\0", m_applicationData.debugAddress);
 			if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
 			{
-				sanitizeAddressString(addressBuffer);
+				_sanitizeAddressString(addressBuffer, 8);
 
 				m_applicationData.debugAddress = size_t(strtol(addressBuffer, nullptr, 0));
 				m_applicationData.debugAddress -= m_applicationData.debugAddress % 0x10;
@@ -861,7 +923,7 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 
 			if (address >= m_applicationData.selectionBeginAddress && address <= m_applicationData.selectionEndAddress)
 			{
-				if (ImGui::IsMouseDown(0) && !isMemorySelectionPopupOpen)
+				if (m_isDraggingSelection && !isMemorySelectionPopupOpen)
 				{
 					s_byteInfo[i].beingSelected = true;
 				}
@@ -890,14 +952,20 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 				}
 				else
 				{
+					m_isDraggingSelection = true;
 					m_applicationData.selectionBeginAddress = hoveredAddress;
 					m_applicationData.selectionEndAddress = hoveredAddress;
 				}
 			}
-			if (ImGui::IsMouseDown(0) && m_applicationData.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress != ADDRESS_UNDEFINED)
+			if (m_isDraggingSelection && m_applicationData.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress != ADDRESS_UNDEFINED)
 			{
 				m_applicationData.selectionEndAddress = hoveredAddress;
 			}
+			
+		}
+		if (ImGui::IsMouseReleased(0))
+		{
+			m_isDraggingSelection = false;
 		}
 
 		// DRAW MEMORY TABLE
@@ -964,12 +1032,31 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 		static char s_labelBuf[128] = "";
 		if (ImGui::BeginPopup("memorySelection"))
 		{
+			size_t selectionLength = (m_applicationData.selectionEndAddress - m_applicationData.selectionBeginAddress) + 1;
+			if (selectionLength <= 4)
+			{
+				uint32_t data = 0u;
+				_copyReverse(m_memoryBuffer + m_applicationData.selectionBeginAddress, reinterpret_cast<char*>(&data), selectionLength);
+				sprintf(addressBuffer, "0x%08X\0", data);
+				_sanitizeAddressString(addressBuffer, selectionLength * 2);
+				if (ImGui::InputText("data", addressBuffer, selectionLength * 2 + 3, ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					data = uint32_t(strtol(addressBuffer, nullptr, 0));
+					_requestMemoryWrite(m_applicationData.selectionBeginAddress, &data, selectionLength);
+				}
+			}
+			else
+			{
+				ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, .2f), "Selection too large to be edited.");
+			}
+			ImGui::Separator();
+
 			ImGui::PushItemWidth(addressSize.x + 12.f);
 			sprintf(addressBuffer, "0x%08X\0", m_applicationData.selectionBeginAddress);
 			ImGui::PushID("SelectionBegin");
 			if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
 			{
-				sanitizeAddressString(addressBuffer);
+				_sanitizeAddressString(addressBuffer, 8);
 				m_applicationData.selectionBeginAddress = size_t(strtol(addressBuffer, nullptr, 0));
 			}
 			ImGui::PopID();
@@ -982,7 +1069,7 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 			ImGui::PushID("SelectionEnd");
 			if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
 			{
-				sanitizeAddressString(addressBuffer);
+				_sanitizeAddressString(addressBuffer, 8);
 				m_applicationData.selectionEndAddress = size_t(strtol(addressBuffer, nullptr, 0));
 				if (m_applicationData.selectionEndAddress < m_applicationData.selectionBeginAddress)
 					m_applicationData.selectionEndAddress = m_applicationData.selectionBeginAddress;
