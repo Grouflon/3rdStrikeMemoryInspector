@@ -81,8 +81,6 @@ namespace memoryMap
 #define IMGUI_TRAINDATA(exp) if (exp) { _saveTrainingData(); }
 
 
-size_t s_maxAddress = 0x02080000;
-
 size_t FindRAMStartAddress(HANDLE _processHandle)
 {
 	SYSTEM_INFO si;
@@ -157,10 +155,13 @@ void TrainingThreadHelper::watchFrameThreadMain()
 
 void TrainingApplication::initialize(HWND _windowHandle)
 {
+	//NOTE: we should use double buffering in ordre to have only locks on the write requests array
+	// and we should also test the thread pointer before joining with it (can it really be null with all that gc shit ?)
+
 	assert(_windowHandle);
 	m_windowHandle = _windowHandle;
 
-	m_memoryBufferSize = s_maxAddress;
+	m_memoryBufferSize = SF33_MAXADDRESS;
 	m_memoryBuffer = (uint8_t*)malloc(m_memoryBufferSize);
 
 	m_lock = gcnew SpinLock();
@@ -198,7 +199,7 @@ void TrainingApplication::onFrameBegin()
 	_resolveMemoryWriteRequests();
 
 	SIZE_T bytesRead = 0;
-	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
+	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, SF33_MAXADDRESS, &bytesRead);
 
 	/*HWND activeWindow = GetForegroundWindow();
 	if (activeWindow == (HWND)(void*)(m_FBAProcess->MainWindowHandle))
@@ -219,6 +220,14 @@ void TrainingApplication::onFrameBegin()
 			_writeByte(memoryMap::P1Health, 160);
 			_writeByte(memoryMap::P2Health, 160);
 		}
+		if (m_trainingData.noStun)
+		{
+			_writeByte(0x020695FD, 0); // P1 Stun timer
+			_writeByte(0x02069611, 0); // P2 Stun timer
+			char data[4] = {};
+			_writeData(0x020695FF, data, 4); // P1 Stun bar
+			_writeData(0x02069613, data, 4); // P2 Stun bar
+		}
 		if (m_trainingData.disableMusic)
 		{
 			_writeByte(0x02078D06, 0x00);
@@ -227,16 +236,6 @@ void TrainingApplication::onFrameBegin()
 		{ 
 			_writeByte(0x02078D06, 0x06);
 		}
-	}
-
-	{
-		m_p1GlobalInputFlags = _readUnsignedInt(0x0206AA90, 2);
-		m_p1GameInputFlags = _readUnsignedInt(0x0202564B, 2);
-		m_p1CoinDown = _readByte(0x0206AABB);
-		
-		m_p2GlobalInputFlags = _readUnsignedInt(0x0206AA93, 2);
-		m_p2GameInputFlags = _readUnsignedInt(0x02025685, 2);
-		m_p2CoinDown = _readByte(0x00206AAC1);
 	}
 }
 
@@ -261,9 +260,13 @@ void TrainingApplication::update()
 		}
 	}
 
+	ImGui::PushStyleColor(ImGuiCol_MenuBarBg, IM_COL32(0, 0, 0, 230));
+
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-	ImGui::Begin("Body", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoDecoration);
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 180));
+	ImGui::Begin("Body", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDecoration);
+	ImGui::PopStyleColor();
 	ImGui::PopStyleVar(2);
 	ImGui::SetWindowPos(ImVec2(0.f, 0.f));
 	ImGui::SetWindowSize(ImGui::GetIO().DisplaySize);
@@ -391,11 +394,45 @@ void TrainingApplication::update()
 		m_lock->TryEnter(-1, lockTaken);
 		assert(lockTaken);
 
-		IMGUI_TRAINDATA(ImGui::Checkbox("Training Mode Enabled", &m_trainingData.enabled));
-		ImGui::Separator();
-		IMGUI_TRAINDATA(ImGui::Checkbox("Lock timer", &m_trainingData.lockTimer));
-		IMGUI_TRAINDATA(ImGui::Checkbox("Infinite life", &m_trainingData.infiniteLife));
-		IMGUI_TRAINDATA(ImGui::Checkbox("Disable music", &m_trainingData.disableMusic));
+		// READ SOME SHIT
+		// I believe the bytes that are expected to be 0xff means that a character has been locked, while the byte expected to be 0x02 is the current match state. 0x02 means that round has started and players can move
+		int8_t p1Locked = _readInt8(m_memoryBuffer, 0x020154C8);
+		int8_t p2Locked = _readInt8(m_memoryBuffer, 0x020154CE);
+		uint8_t matchState = _readInt8(m_memoryBuffer, 0x020154A7);
+		m_isInMatch = ((p1Locked == int8_t(0xFF) || p2Locked == int8_t(0xFF)) && matchState == uint8_t(0x02));
+		{
+			m_p1GlobalInputFlags = _readUInt16(m_memoryBuffer, 0x0206AA90);
+			m_p1GameInputFlags = _readUInt16(m_memoryBuffer, 0x0202564B);
+			m_p1CoinDown = _readUInt8(m_memoryBuffer, 0x0206AABB);
+
+			m_p2GlobalInputFlags = _readUInt16(m_memoryBuffer, 0x0206AA93);
+			m_p2GameInputFlags = _readUInt16(m_memoryBuffer, 0x02025685);
+			m_p2CoinDown = _readUInt8(m_memoryBuffer, 0x00206AAC1);
+		}
+
+		if (ImGui::BeginTabBar("MyTabBar", ImGuiTabBarFlags_Reorderable))
+		{
+			if (ImGui::BeginTabItem("Memory Debugger"))
+			{
+				_updateMemoryDebugger(nullptr);
+
+				ImGui::EndTabItem();
+			}
+
+			if (ImGui::BeginTabItem("Training Settings"))
+			{
+				IMGUI_TRAINDATA(ImGui::Checkbox("Training Mode Enabled", &m_trainingData.enabled));
+				ImGui::Separator();
+				IMGUI_TRAINDATA(ImGui::Checkbox("Lock timer", &m_trainingData.lockTimer));
+				IMGUI_TRAINDATA(ImGui::Checkbox("Infinite life", &m_trainingData.infiniteLife));
+				IMGUI_TRAINDATA(ImGui::Checkbox("No stun", &m_trainingData.noStun));
+				IMGUI_TRAINDATA(ImGui::Checkbox("Disable music", &m_trainingData.disableMusic));
+
+				ImGui::EndTabItem();
+			}
+
+			ImGui::EndTabBar();
+		}
 
 		/*ImGui::Text("RAM starting address: 0x%08x", m_ramStartingAddress);
 		ImGui::Text("Frame: %d", _readUnsignedInt(memoryMap::frameNumber, 4));
@@ -428,6 +465,69 @@ void TrainingApplication::update()
 		ImGui::Text("P2 Game Input: %04X", m_p2GameInputFlags);
 		ImGui::Text("P2 Coin Down: %d", m_p2CoinDown);*/
 
+		// READ THE MYSTERIOUS LISTS
+		//0x02068997
+		//0x02068AB6
+
+		if (m_isInMatch)
+		{
+			//player = { 0x02068C6C, 0x2069104 }, --0x498
+			/*if (ImGui::TreeNode((void*)(0x02068C6D), "player1(0x%08X)", 0x02068C6D))
+			{
+				GameObjectData data;
+				_readGameObjectData(m_memoryBuffer, 0x02068C6D, data);
+				_displayGameObjectData(data);
+
+				ImGui::TreePop();
+			}
+
+			if (ImGui::TreeNode((void*)(0x2069105), "player2(0x%08X)", 0x2069105))
+			{
+				GameObjectData data;
+				_readGameObjectData(m_memoryBuffer, 0x2069105, data);
+				_displayGameObjectData(data);
+
+				ImGui::TreePop();
+			}*/
+
+			/*size_t index = 0x02068997;
+			size_t initialObject = 0x02028990;
+			for (size_t i = 0; i < 144; ++i)
+			{
+				int16_t objectIndex = _readInt16(m_memoryBuffer, index + (i * 2));
+				//ImGui::Text("%d", objectIndex);
+
+				if (objectIndex == -1)
+				{
+					ImGui::Text("Invalid");
+				}
+				else
+				{
+
+					size_t objectBase = initialObject + (objectIndex << 11);
+
+					uint8_t friends = _readUInt8(m_memoryBuffer, objectBase + 0x1);
+					int8_t flipX = _readInt8(m_memoryBuffer, objectBase + 0x0A);
+					int16_t posX = _readInt16(m_memoryBuffer, objectBase + 0x64);
+					int16_t posY = _readInt16(m_memoryBuffer, objectBase + 0x68);
+					uint16_t charID = _readUInt16(m_memoryBuffer, objectBase + 0x3C0);
+
+					char bufID[16];
+					sprintf(bufID, "list%d", i);
+					if (ImGui::TreeNode(bufID, "object 0x%02X(0x%08X)(%d,%d)", objectIndex, objectBase, posX, posY))
+					{
+						ImGui::Text("friends: %d", friends);
+						ImGui::Text("flipX: %d", flipX);
+						ImGui::Text("charID: %d", charID);
+
+						ImGui::TreePop();
+					}
+					//objectIndex = _readInt16(m_memoryBuffer, objectBase + 0x21);
+				}
+			}*/
+		}
+		
+
 		m_lock->Exit();
 	}
 	else
@@ -437,7 +537,7 @@ void TrainingApplication::update()
 	if (m_showDemoWindow)
 		ImGui::ShowDemoWindow(&m_showDemoWindow);
 
-	bool showMemoryDebugger = m_applicationData.showMemoryDebugger;
+	/*bool showMemoryDebugger = m_applicationData.showMemoryDebugger;
 	if (showMemoryDebugger)
 	{
 		_updateMemoryDebugger(&showMemoryDebugger);
@@ -446,13 +546,13 @@ void TrainingApplication::update()
 	{
 		m_applicationData.showMemoryDebugger = showMemoryDebugger;
 		_saveApplicationData();
-	}
+	}*/
 
 	bool showMemoryMap = m_applicationData.showMemoryMap;
 	if (showMemoryMap)
 	{
 		SIZE_T bytesRead = 0;
-		ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, s_maxAddress, &bytesRead);
+		ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, SF33_MAXADDRESS, &bytesRead);
 		ImGui::Begin("Memory Map", &showMemoryMap);
 		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.f, 0.f, 0.f, 1.f));
 		if (!m_isRecording)
@@ -513,8 +613,11 @@ void TrainingApplication::update()
 		
 	}
 
+
 	// END
 	ImGui::End();
+
+	ImGui::PopStyleColor();
 }
 
 void TrainingApplication::watchFrameChange()
@@ -525,10 +628,11 @@ void TrainingApplication::watchFrameChange()
 		m_lock->TryEnter(-1, lockTaken);
 		assert(lockTaken);
 
-		uint32_t currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
+		uint32_t currentFrame = 0;
+		_readData(memoryMap::frameNumber, &currentFrame, 4, false);
 		if (currentFrame != m_currentFrame)
 		{
-			if (currentFrame != m_currentFrame + 1)
+			if (m_currentFrame != -1 && currentFrame != m_currentFrame + 1)
 			{
 				LOG_ERROR("Missed %d frames", (currentFrame - m_currentFrame) - 1)
 			}
@@ -568,7 +672,7 @@ void TrainingApplication::_attachToFBA()
 		return;
 	}
 
-	m_currentFrame = _readUnsignedInt(memoryMap::frameNumber, 4);
+	m_currentFrame = -1;
 
 	_calibrateP2InputMapping();
 
@@ -623,29 +727,77 @@ void TrainingApplication::_sanitizeAddressString(char* _string, size_t _digitCou
 	_string[_digitCount + 2] = '\0';
 }
 
-void TrainingApplication::_writeByte(size_t _address, char _byte)
+void TrainingApplication::_writeByte(size_t _address, uint8_t _byte)
 {
 	assert(_isAttachedToFBA());
 	WriteProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + _address), &_byte, 1, nullptr);
 }
 
-char TrainingApplication::_readByte(size_t _address)
+
+void TrainingApplication::_writeData(size_t _address, void* _data, size_t _dataSize)
 {
 	assert(_isAttachedToFBA());
-	char byte = 0;
-	ReadProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + _address), &byte, 1, nullptr);
-	return byte;
+	WriteProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + _address), _data, _dataSize, nullptr);
 }
 
-void TrainingApplication::_incrementDebugAddress(int64_t _increment)
+void TrainingApplication::_readData(size_t _address, void* _data, size_t _dataSize, bool _reverse)
 {
-	if (_increment < 0 && (_increment * -1) > m_applicationData.debugAddress)
-		m_applicationData.debugAddress = 0;
+	assert(_isAttachedToFBA());
+	ReadProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + _address), _data, _dataSize, nullptr);
+
+	if (_reverse)
+	{
+		uint8_t* data = reinterpret_cast<uint8_t*>(_data);
+		for (size_t i = 0u; i < _dataSize / 2; ++i)
+		{
+			uint8_t byte = data[i];
+			data[i] = data[_dataSize - 1 - i];
+			data[_dataSize - 1 - i] = byte;
+		}
+	}
+}
+
+int8_t TrainingApplication::_readInt8(void* _memory, size_t _address)
+{
+	int8_t value;
+	memcpy(&value, reinterpret_cast<uint8_t*>(_memory) + _address, 1);
+	return value;
+}
+
+uint8_t TrainingApplication::_readUInt8(void* _memory, size_t _address)
+{
+	uint8_t value;
+	memcpy(&value, reinterpret_cast<uint8_t*>(_memory) + _address, 1);
+	return value;
+}
+
+int16_t TrainingApplication::_readInt16(void* _memory, size_t _address)
+{
+	int16_t value;
+	memcpy(&value, reinterpret_cast<uint8_t*>(_memory) + _address, 2);
+	//_copyReverse(reinterpret_cast<uint8_t*>(_memory) + _address, &value, 2);
+	return value;
+}
+
+uint16_t TrainingApplication::_readUInt16(void* _memory, size_t _address)
+{
+	uint16_t value;
+	memcpy(&value, reinterpret_cast<uint8_t*>(_memory) + _address, 2);
+	//_copyReverse(reinterpret_cast<uint8_t*>(_memory) + _address, &value, 2);
+	return value;
+}
+
+size_t TrainingApplication::_incrementAddress(size_t _address, int64_t _increment, size_t _minAddress /*= 0*/, size_t _maxAddress /*= SF33_MAXADDRESS*/)
+{
+	if (_increment < _minAddress && (_increment * -1) > _address)
+		return _minAddress;
 	else
 	{
-		m_applicationData.debugAddress += _increment;
-		if (m_applicationData.debugAddress > s_maxAddress)
-			m_applicationData.debugAddress = s_maxAddress;
+		_address += size_t(_increment);
+		if (_address > _maxAddress)
+			_address = _maxAddress;
+
+		return _address;
 	}
 }
 
@@ -723,57 +875,54 @@ bool TrainingApplication::_findFBAProcessHandle()
 
 void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 {
-	static const size_t colCount = 0x10;
-	static const size_t rowCount = 25;
-	static const size_t bytesToRead = colCount * rowCount;
-
-	static const float rowMarginHeight = 4.f;
-	static const float addressesMarginWidth = 15.f;
-	static const float byteMarginWidth = 5.f;
-	static const float centralMarginWidth = 15.f;
-	static const float detailsColumnWidth = 190.f;
-	static const float separatorWidth = 15.f;
-
 	char buf[256] = {};
+	char addressBuffer[11] = {};
 
 	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
 	ImVec2 byteSize = ImGui::CalcTextSize("00");
-	float rowHeight = byteSize.y + rowMarginHeight;
-	ImVec2 totalSize = ImVec2(detailsColumnWidth + separatorWidth + addressSize.x + addressesMarginWidth + 0x10 * (byteSize.x + byteMarginWidth) + centralMarginWidth, rowHeight * rowCount);
 
-	ImGui::SetNextWindowSize(ImVec2(totalSize.x + 16.f, totalSize.y + 16.f + 19.f));
-	ImGui::Begin("Memory Debugger", _showMemoryDebugger, ImGuiWindowFlags_NoResize);
+	//ImGui::SetNextWindowSize(ImVec2(totalSize.x + 16.f, totalSize.y + 16.f + 38.f));
+	//ImGui::Begin("Memory Debugger", _showMemoryDebugger, /*ImGuiWindowFlags_NoResize | */ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_HorizontalScrollbar);
+	
+	/*if (ImGui::BeginMenuBar())
+	{
+		if (ImGui::BeginMenu("Options"))
+		{
+			char buf[11];
+			sprintf(buf, "0x%08X\0", m_applicationData.pageUpDownIncrement);
+			if (ImGui::InputText("Page Up/Down increment", buf, 11))
+			{
+				_sanitizeAddressString(buf, 8);
+
+				m_applicationData.pageUpDownIncrement = size_t(strtol(buf, nullptr, 0));
+				_saveApplicationData();
+			}
+
+			ImGui::EndMenu();
+		}
+		ImGui::EndMenuBar();
+	}*/
+
 	if (!_isAttachedToFBA())
 	{
 		ImGui::Text("Not attached to FBA");
 	}
 	else
 	{
-		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
-		{
-			_incrementDebugAddress(-(int32_t)(rowCount * 0x10));
-			_saveApplicationData();
-		}
-		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
-		{
-			_incrementDebugAddress((int32_t)(rowCount * 0x10));
-			_saveApplicationData();
-		}
+		static const float detailsColumnWidth = 190.f;
 
 		ImGui::BeginChild("details", ImVec2(detailsColumnWidth, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
-		char addressBuffer[11] = {};
-
 
 		// BASE ADDRESS
 		{
 			ImGui::PushItemWidth(addressSize.x + 12.f);
-			sprintf(addressBuffer, "0x%08X\0", m_applicationData.debugAddress);
+			sprintf(addressBuffer, "0x%08X\0", m_applicationData.memoryDebuggerData.address);
 			if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
 			{
 				_sanitizeAddressString(addressBuffer, 8);
 
-				m_applicationData.debugAddress = size_t(strtol(addressBuffer, nullptr, 0));
-				m_applicationData.debugAddress -= m_applicationData.debugAddress % 0x10;
+				m_applicationData.memoryDebuggerData.address = size_t(strtol(addressBuffer, nullptr, 0));
+				m_applicationData.memoryDebuggerData.address -= m_applicationData.memoryDebuggerData.address % 0x10;
 
 				_saveApplicationData();
 			}
@@ -788,7 +937,7 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 			ImGui::BeginChild("MemoryLabels", ImVec2(ImGui::GetWindowContentRegionWidth(), 350.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
 			static std::vector<MemoryLabel> s_memoryLabels;
 			s_memoryLabels = m_memoryLabels;
-			for (int i = 0; i < s_memoryLabels.size(); ++i)
+			for (size_t i = 0; i < s_memoryLabels.size(); ++i)
 			{
 				MemoryLabel& label = s_memoryLabels[i];
 				if (ImGui::Selectable(label.name.c_str(), i == m_selectedLabel))
@@ -797,11 +946,9 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 					{
 						m_selectedLabel = i;
 
-						if (s_memoryLabels[m_selectedLabel].beginAddress < m_applicationData.debugAddress || s_memoryLabels[m_selectedLabel].beginAddress > m_applicationData.debugAddress + rowCount * colCount)
-						{
-							m_applicationData.debugAddress = s_memoryLabels[m_selectedLabel].beginAddress - rowCount * (colCount - 1) / 2;
-							m_applicationData.debugAddress -= m_applicationData.debugAddress % 0x10;
-						}
+						m_applicationData.memoryDebuggerData.address = s_memoryLabels[m_selectedLabel].beginAddress;
+						m_applicationData.memoryDebuggerData.address = _incrementAddress(m_applicationData.memoryDebuggerData.address, -0x40);
+						m_applicationData.memoryDebuggerData.address -= m_applicationData.memoryDebuggerData.address % 0x10;
 					}
 					else
 					{
@@ -854,276 +1001,17 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 		
 		ImGui::EndChild();
 
-		ImGui::SameLine(0.0f, separatorWidth);
+		ImGui::SameLine(0.0f, 15.f);
 
-		ImGui::BeginChild("memory", ImVec2(), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
-
-		// MEMORY TABLE
-		ImVec2 basePos = ImGui::GetCursorScreenPos();
-		ImVec2 size = ImVec2(addressSize.x + addressesMarginWidth + colCount * (byteSize.x + byteMarginWidth) + centralMarginWidth, rowHeight * rowCount);
-
-		ImVec2 firstTableBasePos = ImVec2(basePos.x + addressSize.x + addressesMarginWidth, basePos.y);
-		ImVec2 secondTableBasePos = ImVec2(firstTableBasePos.x + (byteSize.x + byteMarginWidth) * 0x8 + centralMarginWidth, basePos.y);
-		ImVec2 tableSize = ImVec2((byteSize.x + byteMarginWidth) * 0x8, rowHeight * rowCount);
-
-		auto computeAddressAtPos = [=](const ImVec2& _pos) -> size_t
+		size_t address = m_applicationData.memoryDebuggerData.address;
+		_drawMemory(m_memoryBuffer, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
+		if (address != m_applicationData.memoryDebuggerData.address)
 		{
-			size_t address = ADDRESS_UNDEFINED;
-			if (_pos.x >= firstTableBasePos.x && _pos.x <= firstTableBasePos.x + tableSize.x && _pos.y >= firstTableBasePos.y && _pos.y <= firstTableBasePos.y + tableSize.y)
-			{
-				int addressX = (_pos.x - firstTableBasePos.x) / (byteSize.x + byteMarginWidth);
-				int addressY = (_pos.y - firstTableBasePos.y) / (byteSize.y + rowMarginHeight);
-
-				if (_pos.x <= firstTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
-					&& _pos.y <= firstTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
-				{
-					address = m_applicationData.debugAddress + (0x10 * addressY) + addressX;
-				}
-			}
-			else if (_pos.x >= secondTableBasePos.x && _pos.x <= secondTableBasePos.x + tableSize.x && _pos.y >= secondTableBasePos.y && _pos.y <= secondTableBasePos.y + tableSize.y)
-			{
-				int addressX = (_pos.x - secondTableBasePos.x) / (byteSize.x + byteMarginWidth);
-				int addressY = (_pos.y - secondTableBasePos.y) / (byteSize.y + rowMarginHeight);
-
-				if (_pos.x <= secondTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
-					&& _pos.y <= secondTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
-				{
-					address = m_applicationData.debugAddress + (0x10 * addressY) + addressX + 0x08;
-				}
-			}
-			return address;
-		};
-
-		ImVec2 mp = ImGui::GetIO().MousePos;
-		size_t hoveredAddress = computeAddressAtPos(mp);
-		bool isMouseOverMemory = mp.x >= basePos.x && mp.x <= basePos.x + size.x && mp.y >= basePos.y && mp.y <= basePos.y + size.y;
-		bool isMemorySelectionPopupOpen = ImGui::IsPopupOpen("memorySelection");
-
-		// PRECOMPUTE BYTE INFO
-		struct ByteInfo
-		{
-			bool hovered = false;
-			bool beingSelected = false;
-			bool selected = false;
-			std::vector<int> labels;
-		};
-		static std::vector<ByteInfo> s_byteInfo;
-		s_byteInfo.resize(colCount * rowCount);
-		for (int i = 0; i < s_byteInfo.size(); ++i)
-		{
-			s_byteInfo[i].hovered = false;
-			s_byteInfo[i].beingSelected = false;
-			s_byteInfo[i].selected = false;
-			s_byteInfo[i].labels.clear();
-
-			size_t address = m_applicationData.debugAddress + i;
-
-			if (address == hoveredAddress)
-				s_byteInfo[i].hovered = true;
-
-			if (address >= m_applicationData.selectionBeginAddress && address <= m_applicationData.selectionEndAddress)
-			{
-				if (m_isDraggingSelection && !isMemorySelectionPopupOpen)
-				{
-					s_byteInfo[i].beingSelected = true;
-				}
-				else
-				{
-					s_byteInfo[i].selected = true;
-				}
-			}
-
-			for (int j = 0; j < m_memoryLabels.size(); ++j)
-			{
-				if (address >= m_memoryLabels[j].beginAddress && address <= m_memoryLabels[j].endAddress)
-					s_byteInfo[i].labels.push_back(j);
-			}
-		}
-
-		// SELECTION LOGIC
-		if (isMouseOverMemory && !isMemorySelectionPopupOpen)
-		{
-			if (ImGui::IsMouseClicked(0))
-			{
-				if (hoveredAddress == ADDRESS_UNDEFINED)
-				{
-					m_applicationData.selectionBeginAddress = ADDRESS_UNDEFINED;
-					m_applicationData.selectionEndAddress = ADDRESS_UNDEFINED;
-				}
-				else
-				{
-					m_isDraggingSelection = true;
-					m_applicationData.selectionBeginAddress = hoveredAddress;
-					m_applicationData.selectionEndAddress = hoveredAddress;
-				}
-			}
-			if (m_isDraggingSelection && m_applicationData.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress != ADDRESS_UNDEFINED)
-			{
-				m_applicationData.selectionEndAddress = hoveredAddress;
-			}
-			
-		}
-		if (ImGui::IsMouseReleased(0))
-		{
-			m_isDraggingSelection = false;
-		}
-
-		// DRAW MEMORY TABLE
-		ImGui::InvisibleButton("mem_bg", size);
-		ImColor c = IM_COL32(255, 255, 255, 255);
-		for (size_t row = 0; row < rowCount; ++row)
-		{
-			sprintf(buf, "0x%08X", m_applicationData.debugAddress + row * 0x10);
-			ImGui::GetWindowDrawList()->AddText(ImVec2(basePos.x, basePos.y + row * rowHeight), IM_COL32(255, 255, 255, 127), buf);
-			ImVec2 pos = ImVec2(basePos.x + addressSize.x + addressesMarginWidth, basePos.y + row * rowHeight);
-			for (size_t col = 0; col < colCount; ++col)
-			{
-				size_t byteRelativeAddress = row * 0x10 + col;
-				size_t byteAddress = m_applicationData.debugAddress + byteRelativeAddress;
-				ImVec2 bytePos = ImVec2(pos.x + col * (byteSize.x + byteMarginWidth) + (col >= 0x8 ? centralMarginWidth : 0.f), pos.y);
-
-				ImVec2 rectA = bytePos;
-				ImVec2 rectB = ImVec2(bytePos.x + byteSize.x, bytePos.y + byteSize.y);
-				if (s_byteInfo[byteRelativeAddress].hovered)
-				{
-					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(255,255,255,40));
-				}
-				if (s_byteInfo[byteRelativeAddress].beingSelected)
-				{
-					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(255, 255, 255, 110));
-				}
-				if (s_byteInfo[byteRelativeAddress].selected)
-				{
-					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(0, 255, 255, 110));
-				}
-
-				
-
-				for (int i = 0; i < s_byteInfo[byteRelativeAddress].labels.size(); ++i)
-				{
-					ImU32 col = 0;
-					if (s_byteInfo[byteRelativeAddress].labels[i] == m_selectedLabel)
-						col = IM_COL32(255, 255, 0, 130);
-					else
-						col = IM_COL32(255, 255, 0, 70);
-
-					ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, col);
-				}
-
-				sprintf(buf, "%02X", (uint8_t)(m_memoryBuffer[byteAddress]));
-				ImGui::GetWindowDrawList()->AddText(bytePos, IM_COL32(255, 255, 255, 255), buf);
-
-				if (s_byteInfo[byteRelativeAddress].hovered && !s_byteInfo[byteRelativeAddress].labels.empty())
-				{
-					ImGui::BeginTooltip();
-					for (int i = 0; i < s_byteInfo[byteRelativeAddress].labels.size(); ++i)
-					{
-						ImGui::Text(m_memoryLabels[s_byteInfo[byteRelativeAddress].labels[i]].name.c_str());
-					}
-					ImGui::EndTooltip();
-				}
-			}
-		}
-
-		if (ImGui::IsMouseReleased(1) && m_applicationData.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress >= m_applicationData.selectionBeginAddress && hoveredAddress <= m_applicationData.selectionEndAddress)
-		{
-			ImGui::OpenPopup("memorySelection");
-		}
-		static char s_labelBuf[128] = "";
-		if (ImGui::BeginPopup("memorySelection"))
-		{
-			size_t selectionLength = (m_applicationData.selectionEndAddress - m_applicationData.selectionBeginAddress) + 1;
-			if (selectionLength <= 4)
-			{
-				uint32_t data = 0u;
-				_copyReverse(m_memoryBuffer + m_applicationData.selectionBeginAddress, reinterpret_cast<char*>(&data), selectionLength);
-				sprintf(addressBuffer, "0x%08X\0", data);
-				_sanitizeAddressString(addressBuffer, selectionLength * 2);
-				if (ImGui::InputText("data", addressBuffer, selectionLength * 2 + 3, ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					data = uint32_t(strtol(addressBuffer, nullptr, 0));
-					_requestMemoryWrite(m_applicationData.selectionBeginAddress, &data, selectionLength);
-				}
-			}
-			else
-			{
-				ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, .2f), "Selection too large to be edited.");
-			}
-			ImGui::Separator();
-
-			ImGui::PushItemWidth(addressSize.x + 12.f);
-			sprintf(addressBuffer, "0x%08X\0", m_applicationData.selectionBeginAddress);
-			ImGui::PushID("SelectionBegin");
-			if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
-			{
-				_sanitizeAddressString(addressBuffer, 8);
-				m_applicationData.selectionBeginAddress = size_t(strtol(addressBuffer, nullptr, 0));
-			}
-			ImGui::PopID();
-
-			ImGui::SameLine();
-			ImGui::Text(":");
-			ImGui::SameLine();
-
-			sprintf(addressBuffer, "0x%08X\0", m_applicationData.selectionEndAddress);
-			ImGui::PushID("SelectionEnd");
-			if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
-			{
-				_sanitizeAddressString(addressBuffer, 8);
-				m_applicationData.selectionEndAddress = size_t(strtol(addressBuffer, nullptr, 0));
-				if (m_applicationData.selectionEndAddress < m_applicationData.selectionBeginAddress)
-					m_applicationData.selectionEndAddress = m_applicationData.selectionBeginAddress;
-			}
-			ImGui::PopID();
-			ImGui::PopItemWidth();
-
-			ImGui::PushItemWidth(150.f);
-			ImGui::InputText("Label", s_labelBuf, 127);
-			ImGui::PopItemWidth();
-
-			if (ImGui::Button("New Memory Label"))
-			{
-				MemoryLabel label;
-				label.name = s_labelBuf;
-				label.beginAddress = m_applicationData.selectionBeginAddress;
-				label.endAddress = m_applicationData.selectionEndAddress;
-				m_memoryLabels.push_back(label);
-
-				_saveMemoryLabels();
-
-				*s_labelBuf = 0;
-
-				ImGui::CloseCurrentPopup();
-			}
-
-			ImGui::EndPopup();
-		}
-		else
-		{
-			*s_labelBuf = 0;
-		}
-
-		
-
-		ImGui::EndChild();
-
-		// SCROLL
-		if (isMouseOverMemory)
-		{
-			float mouseWheel = ImGui::GetIO().MouseWheel;
-			if (mouseWheel < 0.f)
-			{
-				_incrementDebugAddress(0x10);
-				_saveApplicationData();
-			}
-			else if (mouseWheel > 0.f)
-			{
-				_incrementDebugAddress(-0x10);
-				_saveApplicationData();
-			}
+			_saveApplicationData();
 		}
 	}
-	ImGui::End();
+
+	//ImGui::End();
 }
 
 void TrainingApplication::_saveApplicationData()
@@ -1232,17 +1120,339 @@ void TrainingApplication::_calibrateP2InputMapping()
 	free(data);
 }
 
-long long unsigned int TrainingApplication::_readUnsignedInt(size_t _address, size_t _size)
+void TrainingApplication::_readGameObjectData(void* _memory, size_t _address, GameObjectData& _data)
 {
-	assert(_isAttachedToFBA());
-	assert(_size <= 8);
-	char buffer[8];
-	ReadProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + _address), buffer, _size, nullptr);
+	_data.address = _address;
 
-	long long unsigned int result = 0;
-	for (int i = 0; i < _size; ++i)
+	_data.friends = _readUInt8(_memory, _address + 0x1);
+	_data.flipX = _readInt8(_memory, _address + 0x0A);
+	_data.posX = _readInt16(_memory, _address + 0x64);
+	_data.posY = _readInt16(_memory, _address + 0x68);
+	_data.charID = _readUInt16(_memory, _address + 0x3C0);
+	_data.validObject = _readUInt16(_memory, _address + 0x2A0);
+
+	//0x29A
+	//0x02068F07 - 0x02068C6D
+	for (size_t i = 0; i < 22; ++i)
 	{
-		result += (unsigned char)buffer[i] * std::pow(0x100, i);
+		for (size_t j = 0; j < 4; ++j)
+		{
+			_data.hitboxes[i][j] = _readInt16(_memory, _address + 0x29A + (i * 8) + (j * 2));
+		}
 	}
-	return result;
+	/*0x02068F07 / 0x02068FBA
+
+	{offset = 0x2D4, type = "push"},
+	{ offset = 0x2C0, type = "throwable" },
+	{ offset = 0x2A0, type = "vulnerability", number = 4 },
+	{ offset = 0x2A8, type = "ext. vulnerability", number = 4 },
+	{ offset = 0x2C8, type = "attack", number = 4 },
+	{ offset = 0x2B8, type = "throw" },
+	*/
+}
+
+void TrainingApplication::_displayGameObjectData(const GameObjectData& _data)
+{
+	ImGui::Text("friends(0x%08X): 0x%02X", _data.address + 0x1, _data.friends);
+	ImGui::Text("flipX(0x%08X): 0x%02X", _data.address + 0x0A, _data.flipX);
+	ImGui::Text("posX(0x%08X): 0x%04X", _data.address + 0x64, _data.posX);
+	ImGui::Text("posY(0x%08X): 0x%04X", _data.address + 0x68, _data.posY);
+	ImGui::Text("charID(0x%08X): 0x%04X", _data.address + 0x3C0, _data.charID);
+	ImGui::Text("validObject(0x%08X): 0x%04X", _data.address + 0x2A0, _data.validObject);
+
+	for (size_t i = 0; i < 22; ++i)
+	{
+		ImGui::Text("Hitbox %d: %d, %d, %d, %d", i, _data.hitboxes[i][0], _data.hitboxes[i][1], _data.hitboxes[i][2], _data.hitboxes[i][3]);
+	}
+}
+
+void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel)
+{
+	static const size_t colCount = 0x10;
+
+	static const float rowMarginHeight = 4.f;
+	static const float addressesMarginWidth = 15.f;
+	static const float byteMarginWidth = 5.f;
+	static const float centralMarginWidth = 15.f;
+
+	char buf[256] = {};
+
+	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
+	ImVec2 byteSize = ImGui::CalcTextSize("00");
+	float rowHeight = byteSize.y + rowMarginHeight;
+	size_t rowCount = size_t(ImGui::GetContentRegionAvail().y / rowHeight);
+	size_t bytesToRead = colCount * rowCount;
+	ImVec2 size = ImVec2(addressSize.x + addressesMarginWidth + colCount * (byteSize.x + byteMarginWidth) + centralMarginWidth, rowHeight * rowCount);
+
+	ImGui::BeginChild("memory", size, false, ImGuiWindowFlags_NoResize);
+
+	// MEMORY TABLE
+	ImVec2 basePos = ImGui::GetCursorScreenPos();
+
+	ImVec2 firstTableBasePos = ImVec2(basePos.x + addressSize.x + addressesMarginWidth, basePos.y);
+	ImVec2 secondTableBasePos = ImVec2(firstTableBasePos.x + (byteSize.x + byteMarginWidth) * 0x8 + centralMarginWidth, basePos.y);
+	ImVec2 tableSize = ImVec2((byteSize.x + byteMarginWidth) * 0x8, rowHeight * rowCount);
+
+	auto computeAddressAtPos = [=](const ImVec2& _pos) -> size_t
+	{
+		size_t address = ADDRESS_UNDEFINED;
+		if (_pos.x >= firstTableBasePos.x && _pos.x <= firstTableBasePos.x + tableSize.x && _pos.y >= firstTableBasePos.y && _pos.y <= firstTableBasePos.y + tableSize.y)
+		{
+			int addressX = int((_pos.x - firstTableBasePos.x) / (byteSize.x + byteMarginWidth));
+			int addressY = int((_pos.y - firstTableBasePos.y) / (byteSize.y + rowMarginHeight));
+
+			if (_pos.x <= firstTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
+				&& _pos.y <= firstTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
+			{
+				address = _data.address + (0x10 * addressY) + addressX;
+			}
+		}
+		else if (_pos.x >= secondTableBasePos.x && _pos.x <= secondTableBasePos.x + tableSize.x && _pos.y >= secondTableBasePos.y && _pos.y <= secondTableBasePos.y + tableSize.y)
+		{
+			int addressX = int((_pos.x - secondTableBasePos.x) / (byteSize.x + byteMarginWidth));
+			int addressY = int((_pos.y - secondTableBasePos.y) / (byteSize.y + rowMarginHeight));
+
+			if (_pos.x <= secondTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
+				&& _pos.y <= secondTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
+			{
+				address = _data.address + (0x10 * addressY) + addressX + 0x08;
+			}
+		}
+		return address;
+	};
+
+	ImVec2 mp = ImGui::GetIO().MousePos;
+	size_t hoveredAddress = computeAddressAtPos(mp);
+	bool isMouseOverMemory = mp.x >= basePos.x && mp.x <= basePos.x + size.x && mp.y >= basePos.y && mp.y <= basePos.y + size.y;
+	bool isMemorySelectionPopupOpen = ImGui::IsPopupOpen("memorySelection");
+
+	// PRECOMPUTE BYTE INFO
+	struct ByteInfo
+	{
+		bool hovered = false;
+		bool beingSelected = false;
+		bool selected = false;
+		std::vector<int> labels;
+	};
+	static std::vector<ByteInfo> s_byteInfo;
+	s_byteInfo.resize(colCount * rowCount);
+	for (size_t i = 0; i < s_byteInfo.size(); ++i)
+	{
+		s_byteInfo[i].hovered = false;
+		s_byteInfo[i].beingSelected = false;
+		s_byteInfo[i].selected = false;
+		s_byteInfo[i].labels.clear();
+
+		size_t address = _data.address + i;
+
+		if (address == hoveredAddress)
+			s_byteInfo[i].hovered = true;
+
+		if (address >= _data.selectionBeginAddress && address <= _data.selectionEndAddress)
+		{
+			if (_data.isDraggingSelection && !isMemorySelectionPopupOpen)
+			{
+				s_byteInfo[i].beingSelected = true;
+			}
+			else
+			{
+				s_byteInfo[i].selected = true;
+			}
+		}
+
+		for (size_t j = 0; j < _labels.size(); ++j)
+		{
+			if (address >= _labels[j].beginAddress && address <= _labels[j].endAddress)
+				s_byteInfo[i].labels.push_back(j);
+		}
+	}
+
+	// SELECTION LOGIC
+	if (isMouseOverMemory && !isMemorySelectionPopupOpen)
+	{
+		if (ImGui::IsMouseClicked(0))
+		{
+			if (hoveredAddress == ADDRESS_UNDEFINED)
+			{
+				_data.selectionBeginAddress = ADDRESS_UNDEFINED;
+				_data.selectionEndAddress = ADDRESS_UNDEFINED;
+			}
+			else
+			{
+				_data.isDraggingSelection = true;
+				_data.selectionBeginAddress = hoveredAddress;
+				_data.selectionEndAddress = hoveredAddress;
+			}
+		}
+		if (_data.isDraggingSelection && _data.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress != ADDRESS_UNDEFINED)
+		{
+			_data.selectionEndAddress = hoveredAddress;
+		}
+
+	}
+	if (ImGui::IsMouseReleased(0))
+	{
+		_data.isDraggingSelection = false;
+	}
+
+	// DRAW MEMORY TABLE
+	ImGui::InvisibleButton("mem_bg", size);
+	ImColor c = IM_COL32(255, 255, 255, 255);
+	for (size_t row = 0; row < rowCount; ++row)
+	{
+		sprintf(buf, "0x%08X", _data.address + row * 0x10);
+		ImGui::GetWindowDrawList()->AddText(ImVec2(basePos.x, basePos.y + row * rowHeight), IM_COL32(255, 255, 255, 127), buf);
+		ImVec2 pos = ImVec2(basePos.x + addressSize.x + addressesMarginWidth, basePos.y + row * rowHeight);
+		for (size_t col = 0; col < colCount; ++col)
+		{
+			size_t byteRelativeAddress = row * 0x10 + col;
+			size_t byteAddress = _data.address + byteRelativeAddress;
+			ImVec2 bytePos = ImVec2(pos.x + col * (byteSize.x + byteMarginWidth) + (col >= 0x8 ? centralMarginWidth : 0.f), pos.y);
+
+			ImVec2 rectA = bytePos;
+			ImVec2 rectB = ImVec2(bytePos.x + byteSize.x, bytePos.y + byteSize.y);
+			if (s_byteInfo[byteRelativeAddress].hovered)
+			{
+				ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(255, 255, 255, 40));
+			}
+			if (s_byteInfo[byteRelativeAddress].beingSelected)
+			{
+				ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(255, 255, 255, 110));
+			}
+			if (s_byteInfo[byteRelativeAddress].selected)
+			{
+				ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(0, 255, 255, 110));
+			}
+
+
+
+			for (size_t i = 0; i < s_byteInfo[byteRelativeAddress].labels.size(); ++i)
+			{
+				ImU32 col = 0;
+				if (s_byteInfo[byteRelativeAddress].labels[i] == _selectedLabel)
+					col = IM_COL32(255, 255, 0, 130);
+				else
+					col = IM_COL32(255, 255, 0, 70);
+
+				ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, col);
+			}
+
+			sprintf(buf, "%02X", ((uint8_t*)_memory)[byteAddress]);
+			ImGui::GetWindowDrawList()->AddText(bytePos, IM_COL32(255, 255, 255, 255), buf);
+
+			if (s_byteInfo[byteRelativeAddress].hovered && !s_byteInfo[byteRelativeAddress].labels.empty())
+			{
+				ImGui::BeginTooltip();
+				for (size_t i = 0; i < s_byteInfo[byteRelativeAddress].labels.size(); ++i)
+				{
+					ImGui::Text(_labels[s_byteInfo[byteRelativeAddress].labels[i]].name.c_str());
+				}
+				ImGui::EndTooltip();
+			}
+		}
+	}
+
+	if (ImGui::IsMouseReleased(1) && _data.selectionBeginAddress != ADDRESS_UNDEFINED && hoveredAddress >= _data.selectionBeginAddress && hoveredAddress <= _data.selectionEndAddress)
+	{
+		ImGui::OpenPopup("memorySelection");
+	}
+	if (ImGui::BeginPopup("memorySelection"))
+	{
+		char addressBuffer[11] = {};
+		size_t selectionLength = (_data.selectionEndAddress - _data.selectionBeginAddress) + 1;
+		if (selectionLength <= 4)
+		{
+			uint32_t data = 0u;
+			_copyReverse(reinterpret_cast<uint8_t*>(_memory) + _data.selectionBeginAddress, reinterpret_cast<uint8_t*>(&data), selectionLength);
+			sprintf(addressBuffer, "0x%08X\0", data);
+			_sanitizeAddressString(addressBuffer, selectionLength * 2);
+			if (ImGui::InputText("data", addressBuffer, selectionLength * 2 + 3, ImGuiInputTextFlags_EnterReturnsTrue))
+			{
+				data = uint32_t(strtol(addressBuffer, nullptr, 0));
+				_requestMemoryWrite(_data.selectionBeginAddress, &data, selectionLength);
+			}
+		}
+		else
+		{
+			ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, .2f), "Selection too large to be edited.");
+		}
+		ImGui::Separator();
+
+		ImGui::PushItemWidth(addressSize.x + 12.f);
+		sprintf(addressBuffer, "0x%08X\0", _data.selectionBeginAddress);
+		ImGui::PushID("SelectionBegin");
+		if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
+		{
+			_sanitizeAddressString(addressBuffer, 8);
+			_data.selectionBeginAddress = size_t(strtol(addressBuffer, nullptr, 0));
+		}
+		ImGui::PopID();
+
+		ImGui::SameLine();
+		ImGui::Text(":");
+		ImGui::SameLine();
+
+		sprintf(addressBuffer, "0x%08X\0", _data.selectionEndAddress);
+		ImGui::PushID("SelectionEnd");
+		if (ImGui::InputText("", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
+		{
+			_sanitizeAddressString(addressBuffer, 8);
+			_data.selectionEndAddress = size_t(strtol(addressBuffer, nullptr, 0));
+			if (_data.selectionEndAddress < _data.selectionBeginAddress)
+				_data.selectionEndAddress = _data.selectionBeginAddress;
+		}
+		ImGui::PopID();
+		ImGui::PopItemWidth();
+
+		ImGui::PushItemWidth(150.f);
+		ImGui::InputText("Label", _data.labelBuffer, 127);
+		ImGui::PopItemWidth();
+
+		if (ImGui::Button("New Memory Label"))
+		{
+			MemoryLabel label;
+			label.name = _data.labelBuffer;
+			label.beginAddress = _data.selectionBeginAddress;
+			label.endAddress = _data.selectionEndAddress;
+			m_memoryLabels.push_back(label);
+
+			_saveMemoryLabels();
+
+			*_data.labelBuffer = 0;
+
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::EndPopup();
+	}
+	else
+	{
+		*_data.labelBuffer = 0;
+	}
+
+	ImGui::EndChild();
+
+	// SCROLL
+	if (isMouseOverMemory)
+	{
+		float mouseWheel = ImGui::GetIO().MouseWheel;
+		if (mouseWheel < 0.f)
+		{
+			_data.address = _incrementAddress(_data.address, 0x10);
+			_saveApplicationData();
+		}
+		else if (mouseWheel > 0.f)
+		{
+			_data.address = _incrementAddress(_data.address, -0x10);
+			_saveApplicationData();
+		}
+	}
+	if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
+	{
+		_data.address = _incrementAddress(_data.address, -(int32_t)(rowCount * 0x10));
+	}
+	if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
+	{
+		_data.address = _incrementAddress(_data.address, (int32_t)(rowCount * 0x10));
+	}
 }

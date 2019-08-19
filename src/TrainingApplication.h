@@ -12,6 +12,8 @@ class TrainingApplication;
 
 #define ADDRESS_UNDEFINED ~size_t(0)
 
+#define SF33_MAXADDRESS 0x02080000
+
 enum GameInput
 {
 	GameInput_Coin,
@@ -45,6 +47,21 @@ enum class DockingMode : int
 	Right,
 };
 
+struct MemoryDisplayData
+{
+	size_t address = 0;
+	size_t selectionBeginAddress = ~size_t(0);
+	size_t selectionEndAddress = ~size_t(0);
+
+	bool isDraggingSelection = false;
+	char labelBuffer[128] = {};
+
+	MIRROR_CLASS(MemoryDisplayData)
+	(
+		MIRROR_MEMBER(address);
+	);
+};
+
 struct TrainingApplicationData
 {
 	bool autoAttach = true;
@@ -55,10 +72,8 @@ struct TrainingApplicationData
 	int windowY = 100;
 	int windowW = 400;
 	int windowH = 700;
-	size_t debugAddress = 0;
-	size_t selectionBeginAddress = ~size_t(0);
-	size_t selectionEndAddress = ~size_t(0);
 
+	MemoryDisplayData memoryDebuggerData;
 
 	MIRROR_CLASS(TrainingApplicationData)
 	(
@@ -70,7 +85,7 @@ struct TrainingApplicationData
 		MIRROR_MEMBER(windowY)
 		MIRROR_MEMBER(windowW)
 		MIRROR_MEMBER(windowH)
-		MIRROR_MEMBER(debugAddress)
+		MIRROR_MEMBER(memoryDebuggerData)
 	);
 };
 
@@ -79,6 +94,7 @@ struct TrainingModeData
 	bool enabled = false;
 	bool lockTimer = true;
 	bool infiniteLife = true;
+	bool noStun = true;
 	bool disableMusic = false;
 
 	MIRROR_CLASS(TrainingModeData)
@@ -86,6 +102,7 @@ struct TrainingModeData
 		MIRROR_MEMBER(enabled)
 		MIRROR_MEMBER(lockTimer)
 		MIRROR_MEMBER(infiniteLife)
+		MIRROR_MEMBER(noStun)
 		MIRROR_MEMBER(disableMusic)
 	);
 };
@@ -102,6 +119,20 @@ struct MemoryLabel
 		MIRROR_MEMBER(beginAddress)
 		MIRROR_MEMBER(endAddress)
 	);
+};
+
+struct GameObjectData
+{
+	size_t address = 0;
+
+	uint8_t friends = 0;
+	int8_t flipX = 0;
+	int16_t posX = 0;
+	int16_t posY = 0;
+	uint16_t charID = 0;
+	uint16_t validObject = 0;
+
+	int16_t hitboxes[22][4] = {};
 };
 
 class TrainingApplication
@@ -123,10 +154,16 @@ private:
 	// char array size must be at least _digitCount + 3 (for 0x and \0)
 	void _sanitizeAddressString(char* _string, size_t _digitCount) const;
 
-	void _writeByte(size_t _address, char _byte);
-	char _readByte(size_t _address);
-	long long unsigned int _readUnsignedInt(size_t _address, size_t _size);
-	void _incrementDebugAddress(int64_t _increment);
+	void _writeByte(size_t _address, uint8_t _byte);
+	void _writeData(size_t _address, void* _data, size_t _dataSize);
+	void _readData(size_t _address, void* _data, size_t _dataSize, bool _reverse = true);
+
+	int8_t _readInt8(void* _memory, size_t _address);
+	uint8_t _readUInt8(void* _memory, size_t _address);
+	int16_t _readInt16(void* _memory, size_t _address);
+	uint16_t _readUInt16(void* _memory, size_t _address);
+
+	size_t _incrementAddress(size_t _address, int64_t _increment, size_t _minAddress = 0, size_t _maxAddress = SF33_MAXADDRESS);
 
 	void _requestMemoryWrite(size_t _address, void* _data, size_t _dataSize, bool _reverse = true);
 	void _resolveMemoryWriteRequests();
@@ -148,6 +185,11 @@ private:
 
 	void _calibrateP2InputMapping();
 
+	void _readGameObjectData(void* _memory, size_t _address, GameObjectData& _data);
+	void _displayGameObjectData(const GameObjectData& _data);
+
+	void _drawMemory(void* _memory, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
+
 	HWND m_windowHandle = nullptr;
 
 	bool m_isDettachRequested = false;
@@ -159,16 +201,12 @@ private:
 
 	bool m_showDemoWindow = false;
 
-	size_t m_debugAddress = 0;
-
 	gcroot<TrainingThreadHelper^> m_threads;
 	gcroot<System::Threading::SpinLock^> m_lock;
 
 	mirror::BinarySerializer m_dataSerializer;
 
 	int m_p2Keys[GameInput_COUNT] = {};
-
-	bool m_isDraggingSelection = false;
 
 	TrainingApplicationData m_applicationData;
 	TrainingModeData m_trainingData;
@@ -187,4 +225,6 @@ private:
 
 	int m_selectedLabel = -1;
 
+	// GAME DATA
+	bool m_isInMatch = false;
 };
