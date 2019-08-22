@@ -60,6 +60,9 @@
     <ClInclude Include="extern\imgui\misc\cpp\imgui_stdlib.h">
       <Filter>Fichiers d%27en-tête</Filter>
     </ClInclude>
+    <ClInclude Include="src\Tools.h">
+      <Filter>Fichiers d%27en-tête</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\3rdTraining.cpp">

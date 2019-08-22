@@ -12,7 +12,7 @@ class TrainingApplication;
 
 #define ADDRESS_UNDEFINED ~size_t(0)
 
-#define SF33_MAXADDRESS 0x02080000
+#define SF33_MAXADDRESS size_t(0x02080000)
 
 enum GameInput
 {
@@ -66,7 +66,7 @@ struct TrainingApplicationData
 {
 	bool autoAttach = true;
 	bool showMemoryDebugger = false;
-	bool showMemoryMap = false;
+	bool showMemoryRecorder = false;
 	DockingMode dockingMode = DockingMode::Undocked;
 	int windowX = 100;
 	int windowY = 100;
@@ -74,18 +74,25 @@ struct TrainingApplicationData
 	int windowH = 700;
 
 	MemoryDisplayData memoryDebuggerData;
+	MemoryDisplayData memoryRecorderData;
+
+	size_t snapshotBeginAddress = 0;
+	size_t snapshotEndAddress = SF33_MAXADDRESS;
 
 	MIRROR_CLASS(TrainingApplicationData)
 	(
 		MIRROR_MEMBER(autoAttach)
 		MIRROR_MEMBER(showMemoryDebugger)
-		MIRROR_MEMBER(showMemoryMap)
+		MIRROR_MEMBER(showMemoryRecorder)
 		MIRROR_MEMBER(dockingMode)
 		MIRROR_MEMBER(windowX)
 		MIRROR_MEMBER(windowY)
 		MIRROR_MEMBER(windowW)
 		MIRROR_MEMBER(windowH)
 		MIRROR_MEMBER(memoryDebuggerData)
+		MIRROR_MEMBER(memoryRecorderData)
+		MIRROR_MEMBER(snapshotBeginAddress)
+		MIRROR_MEMBER(snapshotEndAddress)
 	);
 };
 
@@ -95,7 +102,7 @@ struct TrainingModeData
 	bool lockTimer = true;
 	bool infiniteLife = true;
 	bool noStun = true;
-	bool disableMusic = false;
+	bool lockCharacterSelectTimer = true;
 
 	MIRROR_CLASS(TrainingModeData)
 	(
@@ -103,7 +110,7 @@ struct TrainingModeData
 		MIRROR_MEMBER(lockTimer)
 		MIRROR_MEMBER(infiniteLife)
 		MIRROR_MEMBER(noStun)
-		MIRROR_MEMBER(disableMusic)
+		MIRROR_MEMBER(lockCharacterSelectTimer)
 	);
 };
 
@@ -172,7 +179,8 @@ private:
 
 	bool _findFBAProcessHandle();
 
-	void _updateMemoryDebugger(bool* _showMemoryDebugger);
+	void _updateMemoryDebugger();
+	void _updateMemoryRecorder();
 
 	void _saveApplicationData();
 	void _loadApplicationData();
@@ -189,6 +197,10 @@ private:
 	void _displayGameObjectData(const GameObjectData& _data);
 
 	void _drawMemory(void* _memory, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
+
+	void _buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight);
+
+	bool _inputAddress(const char* label, size_t& _address);
 
 	HWND m_windowHandle = nullptr;
 
@@ -227,4 +239,15 @@ private:
 
 	// GAME DATA
 	bool m_isInMatch = false;
+
+	// MEMORY RECORDER
+	bool m_isMemorySnapshotRequested = false;
+	std::vector<void*> m_memorySnapshots;
+	size_t m_memorySnapshotCount = 0;
+	int m_displayedMemorySnapshot = 0;
+	bool m_isMemoryRecorderMapDirty = false;
+	float m_memoryRecorderMapWidth = 0.f;
+	float m_memoryRecorderMapHeight = 0.f;
+	bool m_isMouseDraggingMemoryMap = false;
+	std::vector<std::tuple<int, int>> m_memoryVariableZones;
 };

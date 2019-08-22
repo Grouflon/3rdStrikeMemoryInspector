@@ -167,6 +167,7 @@
     <ClInclude Include="src\Keys.h" />
     <ClInclude Include="src\Log.h" />
     <ClInclude Include="src\MemVar.h" />
+    <ClInclude Include="src\Tools.h" />
     <ClInclude Include="src\TrainingApplication.h" />
   </ItemGroup>
   <ItemGroup>

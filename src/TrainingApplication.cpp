@@ -10,6 +10,7 @@
 
 #include <Log.h>
 #include <Keys.h>
+#include <Tools.h>
 
 using namespace System;
 using namespace System::Diagnostics;
@@ -80,6 +81,7 @@ namespace memoryMap
 #define IMGUI_APPDATA(exp) if (exp) { _saveApplicationData(); }
 #define IMGUI_TRAINDATA(exp) if (exp) { _saveTrainingData(); }
 
+#define MAX_MEMORYSNAPSHOT 0x10
 
 size_t FindRAMStartAddress(HANDLE _processHandle)
 {
@@ -140,14 +142,6 @@ size_t FindRAMStartAddress(HANDLE _processHandle)
 	return RAMStartAddress;
 }
 
-static char* m_memoryMapData = nullptr;
-static size_t m_memoryMapSize = 0;
-
-static bool m_isRecording = false;
-static size_t m_memorySamplesCount = 0;
-static size_t m_memorySamplesSize = 0;
-static char** m_memorySamples = nullptr;
-
 void TrainingThreadHelper::watchFrameThreadMain()
 {
 	application->watchFrameChange();
@@ -180,10 +174,18 @@ void TrainingApplication::shutdown()
 	_dettachFromFBA();
 
 	m_threads = nullptr;
+	m_lock = nullptr;
 
 	free(m_memoryBuffer);
 	m_memoryBuffer = nullptr;
 	m_memoryBufferSize = 0;
+
+	for (size_t i = 0; i < m_memorySnapshots.size(); ++i)
+	{
+		free(m_memorySnapshots[i]);
+	}
+	m_memorySnapshotCount = 0;
+	m_memorySnapshots.clear();
 }
 
 static uint16_t m_p1GlobalInputFlags;
@@ -228,14 +230,19 @@ void TrainingApplication::onFrameBegin()
 			_writeData(0x020695FF, data, 4); // P1 Stun bar
 			_writeData(0x02069613, data, 4); // P2 Stun bar
 		}
-		if (m_trainingData.disableMusic)
+		if (m_trainingData.lockCharacterSelectTimer)
+		{
+			_writeByte(0x020154FB, 0x21);
+		}
+
+		/*if (m_trainingData.disableMusic)
 		{
 			_writeByte(0x02078D06, 0x00);
 		}
 		else
 		{ 
 			_writeByte(0x02078D06, 0x06);
-		}
+		}*/
 	}
 }
 
@@ -285,7 +292,7 @@ void TrainingApplication::update()
 		if (ImGui::BeginMenu("Misc"))
 		{
 			IMGUI_APPDATA(ImGui::MenuItem("Show Memory Debugger", "", &m_applicationData.showMemoryDebugger));
-			IMGUI_APPDATA(ImGui::MenuItem("Show Memory Map", "", &m_applicationData.showMemoryMap));
+			IMGUI_APPDATA(ImGui::MenuItem("Show Memory Recorder", "", &m_applicationData.showMemoryRecorder));
 			ImGui::MenuItem("Show ImGui Demo Window", "", &m_showDemoWindow);
 			ImGui::EndMenu();
 		}
@@ -412,11 +419,28 @@ void TrainingApplication::update()
 
 		if (ImGui::BeginTabBar("MyTabBar", ImGuiTabBarFlags_Reorderable))
 		{
-			if (ImGui::BeginTabItem("Memory Debugger"))
+			bool showMemoryDebugger = m_applicationData.showMemoryDebugger;
+			if (ImGui::BeginTabItem("Memory Debugger", &m_applicationData.showMemoryDebugger))
 			{
-				_updateMemoryDebugger(nullptr);
+				_updateMemoryDebugger();
 
 				ImGui::EndTabItem();
+			}
+			if (showMemoryDebugger != m_applicationData.showMemoryDebugger)
+			{
+				_saveApplicationData();
+			}
+
+			bool showMemoryRecorder = m_applicationData.showMemoryRecorder;
+			if (ImGui::BeginTabItem("Memory Recorder", &m_applicationData.showMemoryRecorder))
+			{
+				_updateMemoryRecorder();
+
+				ImGui::EndTabItem();
+			}
+			if (showMemoryRecorder != m_applicationData.showMemoryRecorder)
+			{
+				_saveApplicationData();
 			}
 
 			if (ImGui::BeginTabItem("Training Settings"))
@@ -426,10 +450,13 @@ void TrainingApplication::update()
 				IMGUI_TRAINDATA(ImGui::Checkbox("Lock timer", &m_trainingData.lockTimer));
 				IMGUI_TRAINDATA(ImGui::Checkbox("Infinite life", &m_trainingData.infiniteLife));
 				IMGUI_TRAINDATA(ImGui::Checkbox("No stun", &m_trainingData.noStun));
-				IMGUI_TRAINDATA(ImGui::Checkbox("Disable music", &m_trainingData.disableMusic));
+				IMGUI_TRAINDATA(ImGui::Checkbox("Lock Character Select Timer", &m_trainingData.lockCharacterSelectTimer));
+				//IMGUI_TRAINDATA(ImGui::Checkbox("Disable music", &m_trainingData.disableMusic));
 
 				ImGui::EndTabItem();
 			}
+
+			
 
 			ImGui::EndTabBar();
 		}
@@ -548,72 +575,6 @@ void TrainingApplication::update()
 		_saveApplicationData();
 	}*/
 
-	bool showMemoryMap = m_applicationData.showMemoryMap;
-	if (showMemoryMap)
-	{
-		SIZE_T bytesRead = 0;
-		ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, SF33_MAXADDRESS, &bytesRead);
-		ImGui::Begin("Memory Map", &showMemoryMap);
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.f, 0.f, 0.f, 1.f));
-		if (!m_isRecording)
-		{
-			if (ImGui::Button("Record"))
-			{
-				m_isRecording = true;
-			}
-		}
-		else
-		{
-			if (ImGui::Button("Stop Recording"))
-			{
-				m_isRecording = false;
-			}
-		}
-		ImGui::PopStyleColor(1);
-		ImGui::Text("%llu", bytesRead / 8);
-		ImGui::Separator();
-
-		/*ImVec2 drawStart = ImGui::GetCursorScreenPos();
-		ImVec2 drawSize = ImGui::GetContentRegionAvail();
-		size_t minMemoryMapSize = (long long unsigned)drawSize.x * (long long unsigned)drawSize.y;
-		if (minMemoryMapSize > m_memoryMapSize)
-		{
-			m_memoryMapSize = minMemoryMapSize;
-			m_memoryMapData = (char*)realloc(m_memoryMapData, m_memoryMapSize);
-		}
-		memset(m_memoryMapData, 0, m_memoryMapSize);
-
-		long long unsigned* u64Buffer = (long long unsigned*)m_memoryBuffer;
-		float increment = float(bytesRead / sizeof(long long unsigned)) / float(minMemoryMapSize);
-		for (size_t i = 0; i < (bytesRead / sizeof(long long unsigned)); ++i)
-		{
-			size_t pixelIndex = i / std::ceil(increment);
-			m_memoryMapData[pixelIndex] = m_memoryMapData[pixelIndex] & u64Buffer[i];
-		}
-
-		ImDrawList* drawList = ImGui::GetWindowDrawList();
-		for (size_t i = 0; i < minMemoryMapSize; ++i)
-		{
-			ImColor col = m_memoryMapData[i] ? ImColor(1.f, 1.f, 1.f, 1.f) : ImColor(1.f, 1.f, 1.f, .3f);
-			ImVec2 pixelStart = ImVec2(drawStart.x + i % (long long unsigned)drawSize.x, drawStart.y + i / (long long unsigned)drawSize.x);
-			ImVec2 pixelEnd = ImVec2(pixelStart.x + 1, pixelStart.y + 1);
-			drawList->AddRectFilled(pixelStart, pixelEnd, col);
-		}*/
-
-		ImGui::End();
-	}
-	if (showMemoryMap != m_applicationData.showMemoryMap)
-	{
-		m_applicationData.showMemoryMap = showMemoryMap;
-		_saveApplicationData();
-	}
-
-	if (m_isRecording)
-	{
-		
-	}
-
-
 	// END
 	ImGui::End();
 
@@ -642,6 +603,19 @@ void TrainingApplication::watchFrameChange()
 		}
 
 		m_lock->Exit();
+
+		if (m_isMemorySnapshotRequested && m_memorySnapshotCount < MAX_MEMORYSNAPSHOT)
+		{
+			if (m_memorySnapshots.size() <= m_memorySnapshotCount)
+			{
+				m_memorySnapshots.push_back(malloc(SF33_MAXADDRESS));
+			}
+			memcpy(m_memorySnapshots[m_memorySnapshotCount], m_memoryBuffer, SF33_MAXADDRESS);
+			++m_memorySnapshotCount;
+
+			m_isMemorySnapshotRequested = false;
+			m_isMemoryRecorderMapDirty = true;
+		}
 	}
 }
 
@@ -873,35 +847,13 @@ bool TrainingApplication::_findFBAProcessHandle()
 	return true;
 }
 
-void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
+void TrainingApplication::_updateMemoryDebugger()
 {
 	char buf[256] = {};
 	char addressBuffer[11] = {};
 
 	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
 	ImVec2 byteSize = ImGui::CalcTextSize("00");
-
-	//ImGui::SetNextWindowSize(ImVec2(totalSize.x + 16.f, totalSize.y + 16.f + 38.f));
-	//ImGui::Begin("Memory Debugger", _showMemoryDebugger, /*ImGuiWindowFlags_NoResize | */ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_HorizontalScrollbar);
-	
-	/*if (ImGui::BeginMenuBar())
-	{
-		if (ImGui::BeginMenu("Options"))
-		{
-			char buf[11];
-			sprintf(buf, "0x%08X\0", m_applicationData.pageUpDownIncrement);
-			if (ImGui::InputText("Page Up/Down increment", buf, 11))
-			{
-				_sanitizeAddressString(buf, 8);
-
-				m_applicationData.pageUpDownIncrement = size_t(strtol(buf, nullptr, 0));
-				_saveApplicationData();
-			}
-
-			ImGui::EndMenu();
-		}
-		ImGui::EndMenuBar();
-	}*/
 
 	if (!_isAttachedToFBA())
 	{
@@ -1010,8 +962,158 @@ void TrainingApplication::_updateMemoryDebugger(bool* _showMemoryDebugger)
 			_saveApplicationData();
 		}
 	}
+}
 
-	//ImGui::End();
+void TrainingApplication::_updateMemoryRecorder()
+{
+	char addressBuffer[11] = {};
+	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
+	ImVec2 byteSize = ImGui::CalcTextSize("00");
+
+	{
+		ImGui::BeginChild("details", ImVec2(190.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
+
+		// BASE ADDRESS
+		{
+			if (_inputAddress("Address", m_applicationData.memoryRecorderData.address))
+			{
+				m_applicationData.memoryRecorderData.address -= m_applicationData.memoryRecorderData.address % 0x10;
+
+				m_applicationData.memoryRecorderData.address = Clamp(m_applicationData.memoryRecorderData.address, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
+
+				_saveApplicationData();
+			}
+		}
+
+		ImGui::Separator();
+
+		if (_inputAddress("Snapshot Begin", m_applicationData.snapshotBeginAddress))
+		{
+			m_applicationData.snapshotBeginAddress -= m_applicationData.snapshotBeginAddress % 0x10;
+
+			m_applicationData.snapshotBeginAddress = Clamp(m_applicationData.snapshotBeginAddress, 0u, SF33_MAXADDRESS);
+			m_applicationData.snapshotBeginAddress = Min(m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
+
+			m_applicationData.memoryRecorderData.address = Clamp(m_applicationData.memoryRecorderData.address, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
+
+			_saveApplicationData();
+
+			m_isMemoryRecorderMapDirty = true;
+		}
+
+		if (_inputAddress("Snapshot End", m_applicationData.snapshotEndAddress))
+		{
+			m_applicationData.snapshotEndAddress -= m_applicationData.snapshotEndAddress % 0x10;
+
+			m_applicationData.snapshotEndAddress = Clamp(m_applicationData.snapshotEndAddress, 0u, SF33_MAXADDRESS);
+			m_applicationData.snapshotEndAddress = Max(m_applicationData.snapshotEndAddress, m_applicationData.snapshotBeginAddress);
+
+			m_applicationData.memoryRecorderData.address = Clamp(m_applicationData.memoryRecorderData.address, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
+
+			_saveApplicationData();
+
+			m_isMemoryRecorderMapDirty = true;
+		}
+
+		if (m_memorySnapshotCount < MAX_MEMORYSNAPSHOT)
+		{
+			ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(200, 0, 0, 255));
+			if (ImGui::Button("Memory Snapshot")) m_isMemorySnapshotRequested = true;
+			ImGui::PopStyleColor();
+		}
+
+		if (m_memorySnapshotCount > 0)
+		{
+			if (ImGui::Button("Clear Snapshots"))
+			{
+				m_memorySnapshotCount = 0;
+				m_displayedMemorySnapshot = 0;
+
+				m_isMemoryRecorderMapDirty = true;
+			}
+		}
+
+		ImGui::Separator();
+		if (m_memorySnapshotCount > 0)
+		{
+			ImGui::SliderInt("Snapshot", &m_displayedMemorySnapshot, 0, m_memorySnapshotCount - 1);
+		}
+
+		ImGui::EndChild();
+	}
+
+	ImGui::SameLine(0.0f, 15.f);
+
+	{
+		ImGui::BeginChild("map", ImVec2(100.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
+
+		ImVec2 size = ImGui::GetContentRegionAvail();
+
+		if (size.x != m_memoryRecorderMapWidth || size.y != m_memoryRecorderMapHeight)
+		{
+			m_isMemoryRecorderMapDirty = true;
+		}
+
+		if (m_isMemoryRecorderMapDirty)
+		{
+
+			_buildMemoryRecorderMap(m_memorySnapshots, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress, size.x, size.y);
+			m_memoryRecorderMapWidth = size.x;
+			m_memoryRecorderMapHeight = size.y;
+			m_isMemoryRecorderMapDirty = false;
+		}
+
+		ImVec2 pos = ImGui::GetCursorScreenPos();
+
+		ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y), ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(255, 255, 255, 40));
+
+		for (auto& zone : m_memoryVariableZones)
+		{
+			float start = float(std::get<0>(zone));
+			float length = float(std::get<1>(zone));
+			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + start), ImVec2(pos.x + size.x, pos.y + start + length), IM_COL32(255, 0, 0, 200));
+		}
+
+		ImVec2 mousePos = ImGui::GetMousePos();
+		if (mousePos.x >= pos.x && mousePos.x <= pos.x + size.x && mousePos.y > pos.y && mousePos.y <= pos.y + size.y)
+		{
+			ImGui::BeginTooltip();
+
+			size_t addressRange = m_applicationData.snapshotEndAddress - m_applicationData.snapshotBeginAddress;
+			size_t address = m_applicationData.snapshotBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
+			address -= address % 0x10;
+
+			ImGui::Text("0x%08X", address);
+
+			if (ImGui::IsMouseClicked(0))
+			{
+				m_isMouseDraggingMemoryMap = true;
+			}
+			if (m_isMouseDraggingMemoryMap && ImGui::IsMouseDown(0))
+			{
+				m_applicationData.memoryRecorderData.address = address;
+			}
+
+			ImGui::EndTooltip();
+		}
+		if (ImGui::IsMouseReleased(0))
+		{
+			m_isMouseDraggingMemoryMap = false;
+		}
+
+		size_t addressRange = m_applicationData.snapshotEndAddress - m_applicationData.snapshotBeginAddress;
+		float currentAddressY = float(double(m_applicationData.memoryRecorderData.address - m_applicationData.snapshotBeginAddress) / double(addressRange)) * size.y;
+		ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + currentAddressY), ImVec2(pos.x + size.x, pos.y + currentAddressY + 1.f), IM_COL32(255, 255, 0, 200));
+
+		ImGui::EndChild();
+	}
+
+	ImGui::SameLine(0.0f, 15.f);
+
+	if (m_memorySnapshotCount > 0)
+	{
+		_drawMemory(m_memorySnapshots[m_displayedMemorySnapshot], m_applicationData.memoryRecorderData, m_memoryLabels, m_selectedLabel);
+	}
 }
 
 void TrainingApplication::_saveApplicationData()
@@ -1455,4 +1557,68 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 	{
 		_data.address = _incrementAddress(_data.address, (int32_t)(rowCount * 0x10));
 	}
+}
+
+void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight)
+{
+	m_memoryVariableZones.clear();
+
+	if (_snapshots.size() == 0)
+		return;
+
+	size_t mapHeight = size_t(_mapHeight);
+	size_t snapshotDataSize = _endAddress - _beginAddress;
+	size_t lineDataSize = snapshotDataSize / mapHeight;
+	lineDataSize -= lineDataSize % 0x10;
+
+	size_t differStartLine = -1;
+	for (size_t i = 0; i < mapHeight; ++i)
+	{
+		bool differ = false;
+		for (size_t j = 0; j < lineDataSize; ++j)
+		{
+			for (size_t k = 1; k < _snapshots.size(); ++k)
+			{
+				size_t address = _beginAddress + i * lineDataSize + j;
+
+				if (address >= _endAddress)
+					break;
+
+				if (0 != memcmp((uint8_t*)(_snapshots[0]) + address, (uint8_t*)(_snapshots[k]) + address, 0x10))
+				{
+					differ = true;
+					break;
+				}
+			}
+
+			if (differ)
+				break;
+		}
+
+		if (differ && differStartLine == -1)
+		{
+			differStartLine = i;
+		}
+		else if (!differ && differStartLine != -1)
+		{
+			m_memoryVariableZones.push_back(std::make_tuple(differStartLine, (i - 1) - differStartLine));
+			differStartLine = -1;
+		}
+	}
+}
+
+bool TrainingApplication::_inputAddress(const char* label, size_t& _address)
+{
+	char addressBuffer[11] = {};
+	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
+
+	sprintf(addressBuffer, "0x%08X\0", _address);
+
+	ImGui::PushItemWidth(addressSize.x + 12.f);
+	bool result = ImGui::InputText(label, addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue);
+	ImGui::PopItemWidth();
+
+	_sanitizeAddressString(addressBuffer, 8);
+	_address = strtol(addressBuffer, nullptr, 0);
+	return result;
 }
