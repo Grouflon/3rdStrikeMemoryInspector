@@ -1029,6 +1029,9 @@ void TrainingApplication::_updateMemoryRecorder()
 				m_memorySnapshotCount = 0;
 				m_displayedMemorySnapshot = 0;
 
+				m_skipDifferencesList.clear();
+				m_checkDifferencesList.clear();
+
 				m_isMemoryRecorderMapDirty = true;
 			}
 		}
@@ -1037,6 +1040,134 @@ void TrainingApplication::_updateMemoryRecorder()
 		if (m_memorySnapshotCount > 0)
 		{
 			ImGui::SliderInt("Snapshot", &m_displayedMemorySnapshot, 0, m_memorySnapshotCount - 1);
+
+			ImGui::PushStyleColor(ImGuiCol_ChildWindowBg, IM_COL32(255, 255, 255, 20));
+			ImGui::Text("Skip differences list");
+			ImGui::BeginChild("SkipCheckList", ImVec2(ImGui::GetWindowContentRegionWidth(), 150.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+			static std::vector<int> s_snapshotList;
+			s_snapshotList = m_skipDifferencesList;
+
+			bool popupOpened = false;
+			for (size_t i = 0; i < s_snapshotList.size(); ++i)
+			{
+				char buf[16];
+				sprintf(buf, "snapshot %d", s_snapshotList[i]);
+				ImGui::Selectable(buf);
+
+				sprintf(buf, "psnapshot %d", s_snapshotList[i]);
+
+				if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1))
+				{
+					ImGui::OpenPopup(buf);
+				}
+
+				if (ImGui::BeginPopupContextItem(buf))
+				{
+					popupOpened = true;
+					if (ImGui::MenuItem("Remove"))
+					{
+						m_skipDifferencesList.erase(m_skipDifferencesList.begin() + i);
+						m_isMemoryRecorderMapDirty = true;
+					}
+
+					ImGui::EndPopup();
+				}
+			}
+			ImGui::EndChild();
+
+			// GLOBAL LIST POPUP
+			if (!popupOpened && ImGui::BeginPopupContextItem("skipListPopup"))
+			{
+				if (ImGui::BeginMenu("Add"))
+				{
+					for (size_t i = 0; i < m_memorySnapshots.size(); ++i)
+					{
+						char buf[16];
+						sprintf(buf, "snapshot %d", i);
+						if (ImGui::MenuItem(buf))
+						{
+							if (std::find(m_skipDifferencesList.begin(), m_skipDifferencesList.end(), i) == m_skipDifferencesList.end())
+							{
+								m_skipDifferencesList.push_back(i);
+								m_isMemoryRecorderMapDirty = true;
+							}
+						}
+					}
+					ImGui::EndMenu();
+				}
+				if (ImGui::MenuItem("Clear"))
+				{
+					m_skipDifferencesList.clear();
+					m_isMemoryRecorderMapDirty = true;
+				}
+
+				ImGui::EndPopup();
+			}
+
+
+			ImGui::Text("Check differences list");
+			ImGui::BeginChild("CheckDifferencesList", ImVec2(ImGui::GetWindowContentRegionWidth(), 150.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+			s_snapshotList = m_checkDifferencesList;
+
+			popupOpened = false;
+			for (size_t i = 0; i < s_snapshotList.size(); ++i)
+			{
+				char buf[16];
+				sprintf(buf, "snapshot %d", s_snapshotList[i]);
+				ImGui::Selectable(buf);
+
+				sprintf(buf, "psnapshot %d", s_snapshotList[i]);
+
+				if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1))
+				{
+					ImGui::OpenPopup(buf);
+				}
+
+				if (ImGui::BeginPopupContextItem(buf))
+				{
+					popupOpened = true;
+					if (ImGui::MenuItem("Remove"))
+					{
+						m_checkDifferencesList.erase(m_checkDifferencesList.begin() + i);
+						m_isMemoryRecorderMapDirty = true;
+					}
+
+					ImGui::EndPopup();
+				}
+			}
+			ImGui::EndChild();
+
+			// GLOBAL LIST POPUP
+			if (!popupOpened && ImGui::BeginPopupContextItem("checkListPopup"))
+			{
+				if (ImGui::BeginMenu("Add"))
+				{
+					for (size_t i = 0; i < m_memorySnapshots.size(); ++i)
+					{
+						char buf[16];
+						sprintf(buf, "snapshot %d", i);
+						if (ImGui::MenuItem(buf))
+						{
+							if (std::find(m_checkDifferencesList.begin(), m_checkDifferencesList.end(), i) == m_checkDifferencesList.end())
+							{
+								m_checkDifferencesList.push_back(i);
+								m_isMemoryRecorderMapDirty = true;
+							}
+						}
+					}
+					ImGui::EndMenu();
+				}
+				if (ImGui::MenuItem("Clear"))
+				{
+					m_checkDifferencesList.clear();
+					m_isMemoryRecorderMapDirty = true;
+				}
+
+				ImGui::EndPopup();
+			}
+
+			ImGui::PopStyleColor();
 		}
 
 		ImGui::EndChild();
@@ -1057,7 +1188,7 @@ void TrainingApplication::_updateMemoryRecorder()
 		if (m_isMemoryRecorderMapDirty)
 		{
 
-			_buildMemoryRecorderMap(m_memorySnapshots, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress, size.x, size.y);
+			_buildMemoryRecorderMap(m_memorySnapshots, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress, size.x, size.y, m_skipDifferencesList, m_checkDifferencesList);
 			m_memoryRecorderMapWidth = size.x;
 			m_memoryRecorderMapHeight = size.y;
 			m_isMemoryRecorderMapDirty = false;
@@ -1559,11 +1690,14 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 	}
 }
 
-void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight)
+void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight, const std::vector<int>& _skipDifferencesList, const std::vector<int>& _checkDifferencesList)
 {
 	m_memoryVariableZones.clear();
 
 	if (_snapshots.size() == 0)
+		return;
+
+	if (_checkDifferencesList.size() < 2)
 		return;
 
 	size_t mapHeight = size_t(_mapHeight);
@@ -1574,25 +1708,32 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 	size_t differStartLine = -1;
 	for (size_t i = 0; i < mapHeight; ++i)
 	{
-		bool differ = false;
-		for (size_t j = 0; j < lineDataSize; ++j)
+		size_t address = _beginAddress + i * lineDataSize;
+		size_t comapreSize = Min(lineDataSize, _endAddress - address);
+
+		bool skip = false;
+		if (_skipDifferencesList.size() >= 2)
 		{
-			for (size_t k = 1; k < _snapshots.size(); ++k)
+			for (size_t k = 1; k < _skipDifferencesList.size(); ++k)
 			{
-				size_t address = _beginAddress + i * lineDataSize + j;
-
-				if (address >= _endAddress)
-					break;
-
-				if (0 != memcmp((uint8_t*)(_snapshots[0]) + address, (uint8_t*)(_snapshots[k]) + address, 0x10))
+				if (0 != memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address, comapreSize))
 				{
-					differ = true;
+					skip = true;
 					break;
 				}
 			}
+		}
+		if (skip)
+			continue;
 
-			if (differ)
+		bool differ = false;
+		for (size_t k = 1; k < _checkDifferencesList.size(); ++k)
+		{
+			if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address, comapreSize))
+			{
+				differ = true;
 				break;
+			}
 		}
 
 		if (differ && differStartLine == -1)
@@ -1604,6 +1745,12 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 			m_memoryVariableZones.push_back(std::make_tuple(differStartLine, (i - 1) - differStartLine));
 			differStartLine = -1;
 		}
+	}
+
+	// Last line
+	if (differStartLine != -1)
+	{
+		m_memoryVariableZones.push_back(std::make_tuple(differStartLine, size_t(_mapHeight) - differStartLine));
 	}
 }
 

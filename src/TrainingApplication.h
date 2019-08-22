@@ -198,7 +198,7 @@ private:
 
 	void _drawMemory(void* _memory, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
 
-	void _buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight);
+	void _buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight, const std::vector<int>& _skipDifferencesList, const std::vector<int>& _checkDifferencesList);
 
 	bool _inputAddress(const char* label, size_t& _address);
 
@@ -250,4 +250,6 @@ private:
 	float m_memoryRecorderMapHeight = 0.f;
 	bool m_isMouseDraggingMemoryMap = false;
 	std::vector<std::tuple<int, int>> m_memoryVariableZones;
+	std::vector<int> m_skipDifferencesList;
+	std::vector<int> m_checkDifferencesList;
 };
