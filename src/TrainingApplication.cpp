@@ -1081,7 +1081,7 @@ void TrainingApplication::_updateMemoryRecorder()
 			{
 				if (ImGui::BeginMenu("Add"))
 				{
-					for (size_t i = 0; i < m_memorySnapshots.size(); ++i)
+					for (size_t i = 0; i < m_memorySnapshotCount; ++i)
 					{
 						char buf[16];
 						sprintf(buf, "snapshot %d", i);
@@ -1143,7 +1143,7 @@ void TrainingApplication::_updateMemoryRecorder()
 			{
 				if (ImGui::BeginMenu("Add"))
 				{
-					for (size_t i = 0; i < m_memorySnapshots.size(); ++i)
+					for (size_t i = 0; i < m_memorySnapshotCount; ++i)
 					{
 						char buf[16];
 						sprintf(buf, "snapshot %d", i);
@@ -1294,7 +1294,7 @@ void TrainingApplication::_updateMemoryRecorder()
 		{
 			float start = float(std::get<0>(zone));
 			float length = float(std::get<1>(zone));
-			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + start), ImVec2(pos.x + size.x, pos.y + start + length), IM_COL32(255, 0, 0, 200));
+			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + start), ImVec2(pos.x + size.x, pos.y + start + length + 1), IM_COL32(255, 0, 0, 200));
 		}
 
 		if (isMouseOverMap)
@@ -1794,20 +1794,21 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 	size_t mapHeight = size_t(_mapHeight);
 	size_t snapshotDataSize = _endAddress - _beginAddress;
 	size_t lineDataSize = snapshotDataSize / mapHeight;
-	lineDataSize -= lineDataSize % 0x10;
+	//lineDataSize -= lineDataSize % 0x10;
 
 	size_t differStartLine = -1;
 	for (size_t i = 0; i < mapHeight; ++i)
 	{
 		size_t address = _beginAddress + i * lineDataSize;
-		size_t comapreSize = Min(lineDataSize, _endAddress - address);
+		size_t compareSize = Min(lineDataSize, _endAddress - address);
+
 
 		bool skip = false;
 		if (_skipDifferencesList.size() >= 2)
 		{
 			for (size_t k = 1; k < _skipDifferencesList.size(); ++k)
 			{
-				if (0 != memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address, comapreSize))
+				if (0 != memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address, compareSize))
 				{
 					skip = true;
 					break;
@@ -1820,7 +1821,7 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 		bool differ = false;
 		for (size_t k = 1; k < _checkDifferencesList.size(); ++k)
 		{
-			if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address, comapreSize))
+			if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address, compareSize))
 			{
 				differ = true;
 				break;
