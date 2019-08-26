@@ -248,7 +248,8 @@ private:
 	bool m_isMemoryRecorderMapDirty = false;
 	float m_memoryRecorderMapWidth = 0.f;
 	float m_memoryRecorderMapHeight = 0.f;
-	bool m_isMouseDraggingMemoryMap = false;
+	bool m_isLeftMouseDraggingMemoryMap = false;
+	bool m_isRightMouseDraggingMemoryMap = false;
 	std::vector<std::tuple<int, int>> m_memoryVariableZones;
 	std::vector<int> m_skipDifferencesList;
 	std::vector<int> m_checkDifferencesList;
