@@ -4,6 +4,7 @@ enc_temp_folder
 bin
 obj
 .vs
+*.vcxproj.user
 imgui.ini
 data/application.data
 data/training.data
