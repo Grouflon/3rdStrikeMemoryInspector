@@ -74,10 +74,11 @@ struct TrainingApplicationData
 	int windowH = 700;
 
 	MemoryDisplayData memoryDebuggerData;
-	MemoryDisplayData memoryRecorderData;
 
 	size_t snapshotBeginAddress = 0;
 	size_t snapshotEndAddress = SF33_MAXADDRESS;
+	size_t snapshotRelevantZoneBeginAddress = 0;
+	size_t snapshotRelevantZoneEndAddress = SF33_MAXADDRESS;
 
 	MIRROR_CLASS(TrainingApplicationData)
 	(
@@ -90,9 +91,8 @@ struct TrainingApplicationData
 		MIRROR_MEMBER(windowW)
 		MIRROR_MEMBER(windowH)
 		MIRROR_MEMBER(memoryDebuggerData)
-		MIRROR_MEMBER(memoryRecorderData)
-		MIRROR_MEMBER(snapshotBeginAddress)
-		MIRROR_MEMBER(snapshotEndAddress)
+		MIRROR_MEMBER(snapshotRelevantZoneBeginAddress)
+		MIRROR_MEMBER(snapshotRelevantZoneEndAddress)
 	);
 };
 
@@ -197,6 +197,7 @@ private:
 	void _displayGameObjectData(const GameObjectData& _data);
 
 	void _drawMemory(void* _memory, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
+	void _drawNavigationPanel(MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
 
 	void _buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight, const std::vector<int>& _skipDifferencesList, const std::vector<int>& _checkDifferencesList);
 

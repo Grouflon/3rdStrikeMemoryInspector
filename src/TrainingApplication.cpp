@@ -861,97 +861,7 @@ void TrainingApplication::_updateMemoryDebugger()
 	}
 	else
 	{
-		static const float detailsColumnWidth = 190.f;
-
-		ImGui::BeginChild("details", ImVec2(detailsColumnWidth, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
-
-		// BASE ADDRESS
-		{
-			ImGui::PushItemWidth(addressSize.x + 12.f);
-			sprintf(addressBuffer, "0x%08X\0", m_applicationData.memoryDebuggerData.address);
-			if (ImGui::InputText("Address", addressBuffer, 11, ImGuiInputTextFlags_EnterReturnsTrue))
-			{
-				_sanitizeAddressString(addressBuffer, 8);
-
-				m_applicationData.memoryDebuggerData.address = size_t(strtol(addressBuffer, nullptr, 0));
-				m_applicationData.memoryDebuggerData.address -= m_applicationData.memoryDebuggerData.address % 0x10;
-
-				_saveApplicationData();
-			}
-			ImGui::PopItemWidth();
-		}
-
-		ImGui::Separator();
-
-		// MEMORY LABELS
-		{
-			ImGui::PushStyleColor(ImGuiCol_ChildWindowBg, IM_COL32(255, 255, 255, 20));
-			ImGui::BeginChild("MemoryLabels", ImVec2(ImGui::GetWindowContentRegionWidth(), 350.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-			static std::vector<MemoryLabel> s_memoryLabels;
-			s_memoryLabels = m_memoryLabels;
-			for (size_t i = 0; i < s_memoryLabels.size(); ++i)
-			{
-				MemoryLabel& label = s_memoryLabels[i];
-				if (ImGui::Selectable(label.name.c_str(), i == m_selectedLabel))
-				{
-					if (m_selectedLabel != i)
-					{
-						m_selectedLabel = i;
-
-						m_applicationData.memoryDebuggerData.address = s_memoryLabels[m_selectedLabel].beginAddress;
-						m_applicationData.memoryDebuggerData.address = _incrementAddress(m_applicationData.memoryDebuggerData.address, -0x40);
-						m_applicationData.memoryDebuggerData.address -= m_applicationData.memoryDebuggerData.address % 0x10;
-					}
-					else
-					{
-						m_selectedLabel = -1;
-					}
-				}
-				char buf[32];
-				sprintf(buf, "memorylabel%d", i);
-				if (ImGui::BeginPopupContextItem(buf))
-				{
-					if (ImGui::InputText("name", &m_memoryLabels[i].name, ImGuiInputTextFlags_EnterReturnsTrue))
-					{
-						_saveMemoryLabels();
-					}
-
-					ImGui::Separator();
-					if (ImGui::Button("^"))
-					{
-						if (i > 0)
-						{
-							m_memoryLabels[i - 1] = s_memoryLabels[i];
-							m_memoryLabels[i] = s_memoryLabels[i - 1];
-							_saveMemoryLabels();
-							ImGui::CloseCurrentPopup();
-						}
-					}
-					ImGui::SameLine();
-					if (ImGui::Button("v"))
-					{
-						if (i < s_memoryLabels.size() - 1)
-						{
-							m_memoryLabels[i + 1] = s_memoryLabels[i];
-							m_memoryLabels[i] = s_memoryLabels[i + 1];
-							_saveMemoryLabels();
-							ImGui::CloseCurrentPopup();
-						}
-					}
-					ImGui::Separator();
-					if (ImGui::Selectable("Delete"))
-					{
-						m_memoryLabels.erase(m_memoryLabels.begin() + i);
-						_saveMemoryLabels();
-					}
-					ImGui::EndPopup();
-				}
-			}
-			ImGui::EndChild();
-			ImGui::PopStyleColor();
-		}
-		
-		ImGui::EndChild();
+		_drawNavigationPanel(m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
 
 		ImGui::SameLine(0.0f, 15.f);
 
@@ -966,49 +876,39 @@ void TrainingApplication::_updateMemoryDebugger()
 
 void TrainingApplication::_updateMemoryRecorder()
 {
-	char addressBuffer[11] = {};
-	ImVec2 addressSize = ImGui::CalcTextSize("0x00000000");
-	ImVec2 byteSize = ImGui::CalcTextSize("00");
+	_drawNavigationPanel(m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
+
+	ImGui::SameLine(0.f, 15.f);
 
 	{
-		ImGui::BeginChild("details", ImVec2(190.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
+		ImGui::BeginChild("recording", ImVec2(190.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
 
-		// BASE ADDRESS
+		if (_inputAddress("Snapshot Begin", m_applicationData.snapshotRelevantZoneBeginAddress))
 		{
-			if (_inputAddress("Address", m_applicationData.memoryRecorderData.address))
-			{
-				m_applicationData.memoryRecorderData.address -= m_applicationData.memoryRecorderData.address % 0x10;
+			m_applicationData.snapshotRelevantZoneBeginAddress -= m_applicationData.snapshotRelevantZoneBeginAddress % 0x10;
 
-				m_applicationData.memoryRecorderData.address = Clamp(m_applicationData.memoryRecorderData.address, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
+			m_applicationData.snapshotRelevantZoneBeginAddress = Clamp(m_applicationData.snapshotRelevantZoneBeginAddress, 0u, SF33_MAXADDRESS);
+			m_applicationData.snapshotRelevantZoneBeginAddress = Min(m_applicationData.snapshotRelevantZoneBeginAddress, m_applicationData.snapshotRelevantZoneEndAddress);
 
-				_saveApplicationData();
-			}
-		}
+			m_applicationData.snapshotBeginAddress = Max(m_applicationData.snapshotBeginAddress, m_applicationData.snapshotRelevantZoneBeginAddress);
 
-		ImGui::Separator();
-
-		if (_inputAddress("Snapshot Begin", m_applicationData.snapshotBeginAddress))
-		{
-			m_applicationData.snapshotBeginAddress -= m_applicationData.snapshotBeginAddress % 0x10;
-
-			m_applicationData.snapshotBeginAddress = Clamp(m_applicationData.snapshotBeginAddress, 0u, SF33_MAXADDRESS);
-			m_applicationData.snapshotBeginAddress = Min(m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
-
-			m_applicationData.memoryRecorderData.address = Clamp(m_applicationData.memoryRecorderData.address, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
+			m_applicationData.memoryDebuggerData.address = Clamp(m_applicationData.memoryDebuggerData.address, m_applicationData.snapshotRelevantZoneBeginAddress, m_applicationData.snapshotRelevantZoneEndAddress);
 
 			_saveApplicationData();
 
 			m_isMemoryRecorderMapDirty = true;
 		}
 
-		if (_inputAddress("Snapshot End", m_applicationData.snapshotEndAddress))
+		if (_inputAddress("Snapshot End", m_applicationData.snapshotRelevantZoneEndAddress))
 		{
-			m_applicationData.snapshotEndAddress -= m_applicationData.snapshotEndAddress % 0x10;
+			m_applicationData.snapshotRelevantZoneEndAddress -= m_applicationData.snapshotRelevantZoneEndAddress % 0x10;
 
-			m_applicationData.snapshotEndAddress = Clamp(m_applicationData.snapshotEndAddress, 0u, SF33_MAXADDRESS);
-			m_applicationData.snapshotEndAddress = Max(m_applicationData.snapshotEndAddress, m_applicationData.snapshotBeginAddress);
+			m_applicationData.snapshotRelevantZoneEndAddress = Clamp(m_applicationData.snapshotRelevantZoneEndAddress, 0u, SF33_MAXADDRESS);
+			m_applicationData.snapshotRelevantZoneEndAddress = Max(m_applicationData.snapshotRelevantZoneEndAddress, m_applicationData.snapshotRelevantZoneBeginAddress);
 
-			m_applicationData.memoryRecorderData.address = Clamp(m_applicationData.memoryRecorderData.address, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress);
+			m_applicationData.snapshotEndAddress = Max(m_applicationData.snapshotEndAddress, m_applicationData.snapshotRelevantZoneEndAddress);
+
+			m_applicationData.memoryDebuggerData.address = Clamp(m_applicationData.memoryDebuggerData.address, m_applicationData.snapshotRelevantZoneBeginAddress, m_applicationData.snapshotRelevantZoneEndAddress);
 
 			_saveApplicationData();
 
@@ -1182,6 +1082,7 @@ void TrainingApplication::_updateMemoryRecorder()
 		ImVec2 pos = ImGui::GetCursorScreenPos();
 		ImVec2 mousePos = ImGui::GetMousePos();
 		size_t addressRange = m_applicationData.snapshotEndAddress - m_applicationData.snapshotBeginAddress;
+		size_t relevantZoneRange = m_applicationData.snapshotRelevantZoneEndAddress - m_applicationData.snapshotRelevantZoneBeginAddress;
 
 		bool isMouseOverMap = mousePos.x >= pos.x && mousePos.x <= pos.x + size.x && mousePos.y > pos.y && mousePos.y <= pos.y + size.y;
 
@@ -1217,11 +1118,15 @@ void TrainingApplication::_updateMemoryRecorder()
 
 				if (delta > addressRange && m_applicationData.snapshotBeginAddress > SF33_MAXADDRESS) // Negative delta
 				{
-					m_applicationData.snapshotBeginAddress = 0;
+					m_applicationData.snapshotBeginAddress = m_applicationData.snapshotRelevantZoneBeginAddress;
 				}
-				else if (m_applicationData.snapshotBeginAddress + addressRange > SF33_MAXADDRESS)
+				else if (m_applicationData.snapshotBeginAddress < m_applicationData.snapshotRelevantZoneBeginAddress)
 				{
-					m_applicationData.snapshotBeginAddress = SF33_MAXADDRESS - addressRange;
+					m_applicationData.snapshotBeginAddress = m_applicationData.snapshotRelevantZoneBeginAddress;
+				}
+				else if (m_applicationData.snapshotBeginAddress + addressRange > m_applicationData.snapshotRelevantZoneEndAddress)
+				{
+					m_applicationData.snapshotBeginAddress = m_applicationData.snapshotRelevantZoneBeginAddress - addressRange;
 				}
 				m_applicationData.snapshotEndAddress = m_applicationData.snapshotBeginAddress + addressRange;
 
@@ -1232,7 +1137,7 @@ void TrainingApplication::_updateMemoryRecorder()
 		// ZOOM
 		if (isMouseOverMap)
 		{
-			size_t centralAddress = m_applicationData.memoryRecorderData.address;
+			size_t centralAddress = m_applicationData.memoryDebuggerData.address;
 
 			float mouseWheel = ImGui::GetIO().MouseWheel;
 			float zoomRatio = 1.f;
@@ -1252,16 +1157,16 @@ void TrainingApplication::_updateMemoryRecorder()
 
 				addressRange = size_t(float(addressRange) * zoomRatio);
 				addressRange -= addressRange % 0x10;
-				addressRange = Clamp(addressRange, size_t(size.y), SF33_MAXADDRESS);
+				addressRange = Clamp(addressRange, size_t(size.y), relevantZoneRange);
 
 				size_t delta = size_t(t * float(addressRange));
 				if (delta > centralAddress)
 				{
 					delta = centralAddress;
 				}
-				if (centralAddress + (addressRange - delta) > SF33_MAXADDRESS)
+				if (centralAddress + (addressRange - delta) > m_applicationData.snapshotRelevantZoneEndAddress)
 				{
-					delta = centralAddress - (SF33_MAXADDRESS - addressRange);
+					delta = centralAddress - (m_applicationData.snapshotRelevantZoneEndAddress - addressRange);
 
 				}
 				m_applicationData.snapshotBeginAddress = centralAddress - delta;
@@ -1308,7 +1213,7 @@ void TrainingApplication::_updateMemoryRecorder()
 			
 			if (m_isLeftMouseDraggingMemoryMap)
 			{
-				m_applicationData.memoryRecorderData.address = address;
+				m_applicationData.memoryDebuggerData.address = address;
 			}
 
 			ImGui::EndTooltip();
@@ -1316,7 +1221,7 @@ void TrainingApplication::_updateMemoryRecorder()
 		
 		// CURRENT ADDRESS CURSOR
 		{
-			float currentAddressY = float(double(m_applicationData.memoryRecorderData.address - m_applicationData.snapshotBeginAddress) / double(addressRange)) * size.y;
+			float currentAddressY = float(double(m_applicationData.memoryDebuggerData.address - m_applicationData.snapshotBeginAddress) / double(addressRange)) * size.y;
 			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + currentAddressY), ImVec2(pos.x + size.x, pos.y + currentAddressY + 1.f), IM_COL32(255, 255, 0, 200));
 		}
 
@@ -1334,7 +1239,7 @@ void TrainingApplication::_updateMemoryRecorder()
 
 	if (m_memorySnapshotCount > 0)
 	{
-		_drawMemory(m_memorySnapshots[m_displayedMemorySnapshot], m_applicationData.memoryRecorderData, m_memoryLabels, m_selectedLabel);
+		_drawMemory(m_memorySnapshots[m_displayedMemorySnapshot], m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
 	}
 }
 
@@ -1346,6 +1251,9 @@ void TrainingApplication::_saveApplicationData()
 void TrainingApplication::_loadApplicationData()
 {
 	mirror::LoadFromFile(m_applicationData, s_applicationDataFileName);
+
+	m_applicationData.snapshotBeginAddress = Max(m_applicationData.snapshotBeginAddress, m_applicationData.snapshotRelevantZoneBeginAddress);
+	m_applicationData.snapshotEndAddress = Min(m_applicationData.snapshotEndAddress, m_applicationData.snapshotRelevantZoneEndAddress);
 
 	SetWindowPos(m_windowHandle, nullptr, m_applicationData.windowX, m_applicationData.windowY, m_applicationData.windowW, m_applicationData.windowH, SWP_NOZORDER);
 }
@@ -1779,6 +1687,94 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 	{
 		_data.address = _incrementAddress(_data.address, (int32_t)(rowCount * 0x10));
 	}
+}
+
+void TrainingApplication::_drawNavigationPanel(MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel /*= -1*/)
+{
+	ImGui::BeginChild("navigation", ImVec2(190.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
+
+	// BASE ADDRESS
+	{
+		if (_inputAddress("Address", _data.address))
+		{
+			_data.address -= _data.address % 0x10;
+			_data.address = Clamp(_data.address, 0u, SF33_MAXADDRESS);
+
+			_saveApplicationData();
+		}
+	}
+
+	ImGui::Separator();
+
+	// MEMORY LABELS
+	{
+		ImGui::PushStyleColor(ImGuiCol_ChildWindowBg, IM_COL32(255, 255, 255, 20));
+		ImGui::BeginChild("MemoryLabels", ImVec2(ImGui::GetWindowContentRegionWidth(), 350.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+		static std::vector<MemoryLabel> s_memoryLabels;
+		s_memoryLabels = _labels;
+		for (size_t i = 0; i < s_memoryLabels.size(); ++i)
+		{
+			MemoryLabel& label = s_memoryLabels[i];
+			if (ImGui::Selectable(label.name.c_str(), i == _selectedLabel))
+			{
+				if (_selectedLabel != i)
+				{
+					_selectedLabel = i;
+
+					_data.address = s_memoryLabels[_selectedLabel].beginAddress;
+					_data.address = _incrementAddress(_data.address, -0x40);
+					_data.address -= _data.address % 0x10;
+				}
+				else
+				{
+					_selectedLabel = -1;
+				}
+			}
+			char buf[32];
+			sprintf(buf, "memorylabel%d", i);
+			if (ImGui::BeginPopupContextItem(buf))
+			{
+				if (ImGui::InputText("name", &_labels[i].name, ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					_saveMemoryLabels();
+				}
+
+				ImGui::Separator();
+				if (ImGui::Button("^"))
+				{
+					if (i > 0)
+					{
+						_labels[i - 1] = s_memoryLabels[i];
+						_labels[i] = s_memoryLabels[i - 1];
+						_saveMemoryLabels();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("v"))
+				{
+					if (i < s_memoryLabels.size() - 1)
+					{
+						_labels[i + 1] = s_memoryLabels[i];
+						_labels[i] = s_memoryLabels[i + 1];
+						_saveMemoryLabels();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+				ImGui::Separator();
+				if (ImGui::Selectable("Delete"))
+				{
+					_labels.erase(_labels.begin() + i);
+					_saveMemoryLabels();
+				}
+				ImGui::EndPopup();
+			}
+		}
+		ImGui::EndChild();
+		ImGui::PopStyleColor();
+	}
+
+	ImGui::EndChild();
 }
 
 void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight, const std::vector<int>& _skipDifferencesList, const std::vector<int>& _checkDifferencesList)
