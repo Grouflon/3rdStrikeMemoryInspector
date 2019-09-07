@@ -931,6 +931,10 @@ void TrainingApplication::_updateMemoryDebugger()
 
 		ImGui::SameLine(0.0f, 15.f);
 
+		_drawMemoryMap();
+
+		ImGui::SameLine(0.0f, 15.f);
+
 		size_t address = m_applicationData.memoryDebuggerData.address;
 		m_lastMemoryRowCount = _drawMemory(m_memoryBuffer, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
 		if (address != m_applicationData.memoryDebuggerData.address)
@@ -1103,182 +1107,7 @@ void TrainingApplication::_updateMemoryRecorder()
 
 	ImGui::SameLine(0.0f, 15.f);
 
-	{
-		ImGui::BeginChild("map", ImVec2(100.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
-
-		ImVec2 size = ImGui::GetContentRegionAvail();
-		ImVec2 pos = ImGui::GetCursorScreenPos();
-		ImVec2 mousePos = ImGui::GetMousePos();
-		size_t addressRange = m_applicationData.mapEndAddress - m_applicationData.mapBeginAddress;
-		size_t captureZoneRange = m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress;
-
-		bool isMouseOverMap = mousePos.x >= pos.x && mousePos.x <= pos.x + size.x && mousePos.y > pos.y && mousePos.y <= pos.y + size.y;
-
-		if (isMouseOverMap && ImGui::IsMouseClicked(0))
-		{
-			m_isLeftMouseDraggingMemoryMap = true;
-		}
-		if (ImGui::IsMouseReleased(0))
-		{
-			m_isLeftMouseDraggingMemoryMap = false;
-		}
-
-		if (isMouseOverMap && ImGui::IsMouseClicked(1))
-		{
-			m_isRightMouseDraggingMemoryMap = true;
-		}
-		if (ImGui::IsMouseReleased(1))
-		{
-			m_isRightMouseDraggingMemoryMap = false;
-		}
-
-		// DRAG
-		if (m_isRightMouseDraggingMemoryMap)
-		{
-			ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
-			float t = mouseDelta.y / size.y;
-			if (t != 0.f)
-			{
-				size_t delta = size_t(float(addressRange) * t);
-
-				m_applicationData.mapBeginAddress += delta;
-				m_applicationData.mapBeginAddress -= m_applicationData.mapBeginAddress % 0x10;
-
-				if (delta > addressRange && m_applicationData.mapBeginAddress > SF33_MAXADDRESS) // Negative delta
-				{
-					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
-				}
-				else if (m_applicationData.mapBeginAddress < m_applicationData.captureBeginAddress)
-				{
-					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
-				}
-				else if (m_applicationData.mapBeginAddress + addressRange > m_applicationData.captureEndAddress)
-				{
-					m_applicationData.mapBeginAddress = m_applicationData.captureEndAddress - addressRange;
-				}
-				m_applicationData.mapEndAddress = m_applicationData.mapBeginAddress + addressRange;
-
-				m_isMemoryRecorderMapDirty = true;
-			}
-		}
-
-		// ZOOM
-		if (isMouseOverMap)
-		{
-			float cursorRatio = (mousePos.y - pos.y) / size.y;
-			size_t pivotAddress = m_applicationData.mapBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
-
-			float mouseWheel = ImGui::GetIO().MouseWheel;
-			float zoomRatio = 1.f;
-			static const float zoomValue = 1.1f;
-			if (mouseWheel > 0.f)
-			{
-				zoomRatio = 1.f / zoomValue;
-			}
-			else if (mouseWheel < 0.f)
-			{
-				zoomRatio = zoomValue;
-			}
-			if (zoomRatio != 1.f)
-			{
-				addressRange = size_t(float(addressRange) * zoomRatio);
-				addressRange -= addressRange % 0x10;
-				addressRange = Clamp(addressRange, size_t(size.y) * 0x10, captureZoneRange);
-
-				size_t lowerAddressRangeHalf = size_t(float(addressRange) * cursorRatio);
-
-				if (pivotAddress - m_applicationData.captureBeginAddress < lowerAddressRangeHalf)
-				{
-					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
-				}
-				else if (pivotAddress > m_applicationData.captureEndAddress - (addressRange - lowerAddressRangeHalf))
-				{
-					m_applicationData.mapBeginAddress = m_applicationData.captureEndAddress - addressRange;
-				}
-				else
-				{
-					m_applicationData.mapBeginAddress = pivotAddress - lowerAddressRangeHalf;
-				}
-
-				m_applicationData.mapBeginAddress -= m_applicationData.mapBeginAddress % 0x10;
-				m_applicationData.mapEndAddress = m_applicationData.mapBeginAddress + addressRange;
-
-				assert(m_applicationData.mapBeginAddress >= m_applicationData.captureBeginAddress);
-				assert(m_applicationData.mapEndAddress <= m_applicationData.captureEndAddress);
-
-				m_isMemoryRecorderMapDirty = true;
-			}
-		}
-
-		// RESIZE
-		if (size.x != m_memoryRecorderMapWidth || size.y != m_memoryRecorderMapHeight)
-		{
-			m_isMemoryRecorderMapDirty = true;
-		}
-
-
-		if (m_isMemoryRecorderMapDirty)
-		{
-
-			_buildMemoryRecorderMap(m_memorySnapshots, m_applicationData.mapBeginAddress, m_applicationData.mapEndAddress, size.x, size.y, m_skipDifferencesList, m_checkDifferencesList);
-			m_memoryRecorderMapWidth = size.x;
-			m_memoryRecorderMapHeight = size.y;
-			m_isMemoryRecorderMapDirty = false;
-		}
-
-		ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y), ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(255, 255, 255, 40));
-
-		for (auto& zone : m_memoryVariableZones)
-		{
-			float start = float(std::get<0>(zone));
-			float length = float(std::get<1>(zone));
-			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + start), ImVec2(pos.x + size.x, pos.y + start + length + 1), IM_COL32(255, 0, 0, 200));
-		}
-
-		{
-			size_t address = m_applicationData.mapBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
-			address -= address % 0x10;
-			address = Clamp(address, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress);
-
-			if (isMouseOverMap)
-			{
-				ImGui::BeginTooltip();
-				ImGui::Text("0x%08X", address);
-				ImGui::EndTooltip();
-			}
-			
-			if (m_isLeftMouseDraggingMemoryMap)
-			{
-				m_applicationData.memoryDebuggerData.address = address;
-			}
-		}
-		
-		// CURRENT ADDRESS CURSOR
-		{
-
-			if (m_lastMemoryRowCount != ADDRESS_UNDEFINED)
-			{
-				size_t displaySize = m_lastMemoryRowCount * 0x10;
-				size_t displayedStartAddress = Min(m_applicationData.memoryDebuggerData.address, m_applicationData.captureEndAddress - displaySize + 0x10);
-				float startY = float(double(displayedStartAddress - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
-				float endY = float(double(displayedStartAddress + displaySize - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
-				if (endY - startY < 1.f)
-					endY = startY + 1.f;
-
-				ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + startY), ImVec2(pos.x + size.x, pos.y + endY), IM_COL32(255, 255, 0, 120));
-			}
-		}
-
-		// RATIO CURSOR
-		{
-			float captureSize = float(m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress);
-			float begin = float(double(m_applicationData.mapBeginAddress - m_applicationData.captureBeginAddress) / captureSize);
-			float end = float(double(m_applicationData.mapEndAddress - m_applicationData.captureBeginAddress) / captureSize);
-			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x + size.x - 10.f, pos.y + size.y * begin), ImVec2(pos.x + size.x - 3.f, pos.y + size.y * end), IM_COL32(255, 255, 255, 40));
-		}
-
-		ImGui::EndChild();
-	}
+	_drawMemoryMap();
 
 	ImGui::SameLine(0.0f, 15.f);
 
@@ -1982,4 +1811,184 @@ void TrainingApplication::_resetMemoryBuffer()
 
 	m_memoryBufferSize = m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress;
 	m_memoryBuffer = (uint8_t*)malloc(m_memoryBufferSize);
+}
+
+void TrainingApplication::_drawMemoryMap()
+{
+	{
+		ImGui::BeginChild("map", ImVec2(100.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
+
+		ImVec2 size = ImGui::GetContentRegionAvail();
+		ImVec2 pos = ImGui::GetCursorScreenPos();
+		ImVec2 mousePos = ImGui::GetMousePos();
+		size_t addressRange = m_applicationData.mapEndAddress - m_applicationData.mapBeginAddress;
+		size_t captureZoneRange = m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress;
+
+		bool isMouseOverMap = mousePos.x >= pos.x && mousePos.x <= pos.x + size.x && mousePos.y > pos.y && mousePos.y <= pos.y + size.y;
+
+		if (isMouseOverMap && ImGui::IsMouseClicked(0))
+		{
+			m_isLeftMouseDraggingMemoryMap = true;
+		}
+		if (ImGui::IsMouseReleased(0))
+		{
+			m_isLeftMouseDraggingMemoryMap = false;
+		}
+
+		if (isMouseOverMap && ImGui::IsMouseClicked(1))
+		{
+			m_isRightMouseDraggingMemoryMap = true;
+		}
+		if (ImGui::IsMouseReleased(1))
+		{
+			m_isRightMouseDraggingMemoryMap = false;
+		}
+
+		// DRAG
+		if (m_isRightMouseDraggingMemoryMap)
+		{
+			ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
+			float t = mouseDelta.y / size.y;
+			if (t != 0.f)
+			{
+				size_t delta = size_t(float(addressRange) * t);
+
+				m_applicationData.mapBeginAddress += delta;
+				m_applicationData.mapBeginAddress -= m_applicationData.mapBeginAddress % 0x10;
+
+				if (delta > addressRange && m_applicationData.mapBeginAddress > SF33_MAXADDRESS) // Negative delta
+				{
+					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
+				}
+				else if (m_applicationData.mapBeginAddress < m_applicationData.captureBeginAddress)
+				{
+					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
+				}
+				else if (m_applicationData.mapBeginAddress + addressRange > m_applicationData.captureEndAddress)
+				{
+					m_applicationData.mapBeginAddress = m_applicationData.captureEndAddress - addressRange;
+				}
+				m_applicationData.mapEndAddress = m_applicationData.mapBeginAddress + addressRange;
+
+				m_isMemoryRecorderMapDirty = true;
+			}
+		}
+
+		// ZOOM
+		if (isMouseOverMap)
+		{
+			float cursorRatio = (mousePos.y - pos.y) / size.y;
+			size_t pivotAddress = m_applicationData.mapBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
+
+			float mouseWheel = ImGui::GetIO().MouseWheel;
+			float zoomRatio = 1.f;
+			static const float zoomValue = 1.1f;
+			if (mouseWheel > 0.f)
+			{
+				zoomRatio = 1.f / zoomValue;
+			}
+			else if (mouseWheel < 0.f)
+			{
+				zoomRatio = zoomValue;
+			}
+			if (zoomRatio != 1.f)
+			{
+				addressRange = size_t(float(addressRange) * zoomRatio);
+				addressRange -= addressRange % 0x10;
+				addressRange = Clamp(addressRange, size_t(size.y) * 0x10, captureZoneRange);
+
+				size_t lowerAddressRangeHalf = size_t(float(addressRange) * cursorRatio);
+
+				if (pivotAddress - m_applicationData.captureBeginAddress < lowerAddressRangeHalf)
+				{
+					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
+				}
+				else if (pivotAddress > m_applicationData.captureEndAddress - (addressRange - lowerAddressRangeHalf))
+				{
+					m_applicationData.mapBeginAddress = m_applicationData.captureEndAddress - addressRange;
+				}
+				else
+				{
+					m_applicationData.mapBeginAddress = pivotAddress - lowerAddressRangeHalf;
+				}
+
+				m_applicationData.mapBeginAddress -= m_applicationData.mapBeginAddress % 0x10;
+				m_applicationData.mapEndAddress = m_applicationData.mapBeginAddress + addressRange;
+
+				assert(m_applicationData.mapBeginAddress >= m_applicationData.captureBeginAddress);
+				assert(m_applicationData.mapEndAddress <= m_applicationData.captureEndAddress);
+
+				m_isMemoryRecorderMapDirty = true;
+			}
+		}
+
+		// RESIZE
+		if (size.x != m_memoryRecorderMapWidth || size.y != m_memoryRecorderMapHeight)
+		{
+			m_isMemoryRecorderMapDirty = true;
+		}
+
+
+		if (m_isMemoryRecorderMapDirty)
+		{
+
+			_buildMemoryRecorderMap(m_memorySnapshots, m_applicationData.mapBeginAddress, m_applicationData.mapEndAddress, size.x, size.y, m_skipDifferencesList, m_checkDifferencesList);
+			m_memoryRecorderMapWidth = size.x;
+			m_memoryRecorderMapHeight = size.y;
+			m_isMemoryRecorderMapDirty = false;
+		}
+
+		ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y), ImVec2(pos.x + size.x, pos.y + size.y), IM_COL32(255, 255, 255, 40));
+
+		for (auto& zone : m_memoryVariableZones)
+		{
+			float start = float(std::get<0>(zone));
+			float length = float(std::get<1>(zone));
+			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + start), ImVec2(pos.x + size.x, pos.y + start + length + 1), IM_COL32(255, 0, 0, 200));
+		}
+
+		{
+			size_t address = m_applicationData.mapBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
+			address -= address % 0x10;
+			address = Clamp(address, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress);
+
+			if (isMouseOverMap)
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("0x%08X", address);
+				ImGui::EndTooltip();
+			}
+
+			if (m_isLeftMouseDraggingMemoryMap)
+			{
+				m_applicationData.memoryDebuggerData.address = address;
+			}
+		}
+
+		// CURRENT ADDRESS CURSOR
+		{
+
+			if (m_lastMemoryRowCount != ADDRESS_UNDEFINED)
+			{
+				size_t displaySize = m_lastMemoryRowCount * 0x10;
+				size_t displayedStartAddress = Min(m_applicationData.memoryDebuggerData.address, m_applicationData.captureEndAddress - displaySize + 0x10);
+				float startY = float(double(displayedStartAddress - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
+				float endY = float(double(displayedStartAddress + displaySize - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
+				if (endY - startY < 1.f)
+					endY = startY + 1.f;
+
+				ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + startY), ImVec2(pos.x + size.x, pos.y + endY), IM_COL32(255, 255, 0, 120));
+			}
+		}
+
+		// RATIO CURSOR
+		{
+			float captureSize = float(m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress);
+			float begin = float(double(m_applicationData.mapBeginAddress - m_applicationData.captureBeginAddress) / captureSize);
+			float end = float(double(m_applicationData.mapEndAddress - m_applicationData.captureBeginAddress) / captureSize);
+			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x + size.x - 10.f, pos.y + size.y * begin), ImVec2(pos.x + size.x - 3.f, pos.y + size.y * end), IM_COL32(255, 255, 255, 40));
+		}
+
+		ImGui::EndChild();
+	}
 }
