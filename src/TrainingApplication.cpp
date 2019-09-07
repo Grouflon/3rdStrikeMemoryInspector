@@ -932,7 +932,7 @@ void TrainingApplication::_updateMemoryDebugger()
 		ImGui::SameLine(0.0f, 15.f);
 
 		size_t address = m_applicationData.memoryDebuggerData.address;
-		_drawMemory(m_memoryBuffer, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
+		m_lastMemoryRowCount = _drawMemory(m_memoryBuffer, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
 		if (address != m_applicationData.memoryDebuggerData.address)
 		{
 			_saveApplicationData();
@@ -1255,8 +1255,18 @@ void TrainingApplication::_updateMemoryRecorder()
 		
 		// CURRENT ADDRESS CURSOR
 		{
-			float currentAddressY = float(double(m_applicationData.memoryDebuggerData.address - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
-			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + currentAddressY), ImVec2(pos.x + size.x, pos.y + currentAddressY + 1.f), IM_COL32(255, 255, 0, 200));
+
+			if (m_lastMemoryRowCount != ADDRESS_UNDEFINED)
+			{
+				size_t displaySize = m_lastMemoryRowCount * 0x10;
+				size_t displayedStartAddress = Min(m_applicationData.memoryDebuggerData.address, m_applicationData.captureEndAddress - displaySize + 0x10);
+				float startY = float(double(displayedStartAddress - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
+				float endY = float(double(displayedStartAddress + displaySize - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
+				if (endY - startY < 1.f)
+					endY = startY + 1.f;
+
+				ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + startY), ImVec2(pos.x + size.x, pos.y + endY), IM_COL32(255, 255, 0, 120));
+			}
 		}
 
 		// RATIO CURSOR
@@ -1274,7 +1284,7 @@ void TrainingApplication::_updateMemoryRecorder()
 
 	if (m_memorySnapshotCount > 0)
 	{
-		_drawMemory(m_memorySnapshots[m_displayedMemorySnapshot], m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
+		m_lastMemoryRowCount = _drawMemory(m_memorySnapshots[m_displayedMemorySnapshot], m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
 	}
 }
 
@@ -1435,7 +1445,7 @@ void TrainingApplication::_displayGameObjectData(const GameObjectData& _data)
 	}
 }
 
-void TrainingApplication::_drawMemory(void* _memory, size_t _startAddress, size_t _endAddress, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel)
+size_t TrainingApplication::_drawMemory(void* _memory, size_t _startAddress, size_t _endAddress, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel)
 {
 	static const size_t colCount = 0x10;
 
@@ -1727,6 +1737,8 @@ void TrainingApplication::_drawMemory(void* _memory, size_t _startAddress, size_
 	{
 		_data.address = _incrementAddress(_data.address, (int32_t)(rowCount * 0x10), _startAddress, _endAddress);
 	}
+
+	return rowCount;
 }
 
 void TrainingApplication::_drawNavigationPanel(MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel /*= -1*/)
@@ -1829,40 +1841,40 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 		return;
 
 	size_t mapHeight = size_t(_mapHeight);
-	size_t snapshotDataSize = _endAddress - _beginAddress;
+	size_t snapshotDataSize = (_endAddress - _beginAddress) / 0x10;
 	size_t lineDataSize = snapshotDataSize / mapHeight;
-	//lineDataSize -= lineDataSize % 0x10;
 
 	size_t differStartLine = -1;
 	for (size_t i = 0; i < mapHeight; ++i)
 	{
-		size_t address = _beginAddress + i * lineDataSize;
-		size_t compareSize = Min(lineDataSize, _endAddress - address);
-
-
-		bool skip = false;
-		if (_skipDifferencesList.size() >= 2)
+		bool differ = false;
+		for (size_t j = 0; j < lineDataSize; ++j)
 		{
-			for (size_t k = 1; k < _skipDifferencesList.size(); ++k)
+			size_t address = _beginAddress + (i * lineDataSize * 0x10) + (j * 0x10);
+			assert(address <= m_applicationData.captureEndAddress);
+
+			for (size_t k = 1; k < _checkDifferencesList.size(); ++k)
 			{
-				if (0 != memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, compareSize))
+				if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, 0x10))
 				{
-					skip = true;
-					break;
+					if (_skipDifferencesList.size() >= 2)
+					{
+						if (0 == memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, 0x10))
+						{
+							differ = true;
+							break;
+						}
+					}
+					else
+					{
+						differ = true;
+						break;
+					}
 				}
 			}
-		}
-		if (skip)
-			continue;
 
-		bool differ = false;
-		for (size_t k = 1; k < _checkDifferencesList.size(); ++k)
-		{
-			if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, compareSize))
-			{
-				differ = true;
+			if (differ)
 				break;
-			}
 		}
 
 		if (differ && differStartLine == -1)
