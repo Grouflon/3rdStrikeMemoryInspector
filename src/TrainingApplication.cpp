@@ -1549,6 +1549,10 @@ size_t TrainingApplication::_drawMemory(void* _memory, size_t _startAddress, siz
 		}
 	}
 
+	// Kind of break the "all data as parameter" design, but fukit right now, I need to advance.
+	static std::vector<bool> s_diffHighlights;
+	_computeMemoryDeltaHighlights(startingAddress, startingAddress + bytesToRead, s_diffHighlights);
+
 	// SELECTION LOGIC
 	if (isMouseOverMemory && !isMemorySelectionPopupOpen)
 	{
@@ -1605,8 +1609,10 @@ size_t TrainingApplication::_drawMemory(void* _memory, size_t _startAddress, siz
 			{
 				ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(0, 255, 255, 110));
 			}
-
-
+			if (s_diffHighlights[byteRelativeAddress])
+			{
+				ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, IM_COL32(255, 0, 0, 110));
+			}
 
 			for (size_t i = 0; i < s_byteInfo[byteRelativeAddress].labels.size(); ++i)
 			{
@@ -1859,18 +1865,22 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 				{
 					if (_skipDifferencesList.size() >= 2)
 					{
-						if (0 == memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, 0x10))
+						for (size_t l = 1; l < _skipDifferencesList.size(); ++l)
 						{
-							differ = true;
-							break;
+							if (0 == memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_skipDifferencesList[l]]) + address - m_applicationData.captureBeginAddress, 0x10))
+							{
+								differ = true;
+							}
 						}
 					}
 					else
 					{
 						differ = true;
-						break;
 					}
 				}
+
+				if (differ)
+					break;
 			}
 
 			if (differ)
@@ -1909,6 +1919,40 @@ bool TrainingApplication::_inputAddress(const char* label, size_t& _address)
 	_sanitizeAddressString(addressBuffer, 8);
 	_address = strtol(addressBuffer, nullptr, 0);
 	return result;
+}
+
+void TrainingApplication::_computeMemoryDeltaHighlights(size_t _beginAddress, size_t _endAddress, std::vector<bool>& _highlights)
+{
+	size_t range = _endAddress - _beginAddress + 1;
+	_highlights.clear();
+	_highlights.resize(range, false);
+
+	if (m_checkDifferencesList.size() < 2)
+		return;
+
+	for (size_t address = _beginAddress; address <= _endAddress; ++address)
+	{
+		for (size_t j = 1; j < m_checkDifferencesList.size(); ++j)
+		{
+			if (0 != memcmp((uint8_t*)(m_memorySnapshots[m_checkDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(m_memorySnapshots[m_checkDifferencesList[j]]) + address - m_applicationData.captureBeginAddress, 0x1))
+			{
+				if (m_skipDifferencesList.size() >= 2)
+				{
+					for (size_t k = 1; k < m_skipDifferencesList.size(); ++k)
+					{
+						if (0 == memcmp((uint8_t*)(m_memorySnapshots[m_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(m_memorySnapshots[m_skipDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, 0x1))
+						{
+							_highlights[address - _beginAddress] = true;
+						}
+					}
+				}
+				else
+				{
+					_highlights[address - _beginAddress] = true;
+				}
+			}
+		}
+	}
 }
 
 void TrainingApplication::_clearMemorySnapshots()

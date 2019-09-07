@@ -209,6 +209,8 @@ private:
 
 	bool _inputAddress(const char* label, size_t& _address);
 
+	void _computeMemoryDeltaHighlights(size_t _beginAddress, size_t _endAddress, std::vector<bool>& _highlights);
+
 	void _clearMemorySnapshots();
 	void _resetMemoryBuffer();
 
