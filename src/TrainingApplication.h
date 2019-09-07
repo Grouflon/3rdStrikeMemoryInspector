@@ -73,12 +73,13 @@ struct TrainingApplicationData
 	int windowW = 400;
 	int windowH = 700;
 
+	size_t captureBeginAddress = 0x01FF0000;
+	size_t captureEndAddress = SF33_MAXADDRESS;
+
 	MemoryDisplayData memoryDebuggerData;
 
-	size_t snapshotBeginAddress = 0;
-	size_t snapshotEndAddress = SF33_MAXADDRESS;
-	size_t snapshotRelevantZoneBeginAddress = 0;
-	size_t snapshotRelevantZoneEndAddress = SF33_MAXADDRESS;
+	size_t mapBeginAddress = 0;
+	size_t mapEndAddress = SF33_MAXADDRESS;
 
 	MIRROR_CLASS(TrainingApplicationData)
 	(
@@ -90,9 +91,9 @@ struct TrainingApplicationData
 		MIRROR_MEMBER(windowY)
 		MIRROR_MEMBER(windowW)
 		MIRROR_MEMBER(windowH)
+		MIRROR_MEMBER(captureBeginAddress)
+		MIRROR_MEMBER(captureEndAddress)
 		MIRROR_MEMBER(memoryDebuggerData)
-		MIRROR_MEMBER(snapshotRelevantZoneBeginAddress)
-		MIRROR_MEMBER(snapshotRelevantZoneEndAddress)
 	);
 };
 
@@ -170,6 +171,11 @@ private:
 	int16_t _readInt16(void* _memory, size_t _address);
 	uint16_t _readUInt16(void* _memory, size_t _address);
 
+	int8_t _readMemoryBufferInt8(size_t _address);
+	uint8_t _readMemoryBufferUInt8(size_t _address);
+	int16_t _readMemoryBufferInt16(size_t _address);
+	uint16_t _readMemoryBufferUInt16(size_t _address);
+
 	size_t _incrementAddress(size_t _address, int64_t _increment, size_t _minAddress = 0, size_t _maxAddress = SF33_MAXADDRESS);
 
 	void _requestMemoryWrite(size_t _address, void* _data, size_t _dataSize, bool _reverse = true);
@@ -196,12 +202,15 @@ private:
 	void _readGameObjectData(void* _memory, size_t _address, GameObjectData& _data);
 	void _displayGameObjectData(const GameObjectData& _data);
 
-	void _drawMemory(void* _memory, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
+	void _drawMemory(void* _memory, size_t _startAddress, size_t _endAddress, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
 	void _drawNavigationPanel(MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel = -1);
 
 	void _buildMemoryRecorderMap(const std::vector<void*> _snapshots, size_t _beginAddress, size_t _endAddress, float _mapWidth, float _mapHeight, const std::vector<int>& _skipDifferencesList, const std::vector<int>& _checkDifferencesList);
 
 	bool _inputAddress(const char* label, size_t& _address);
+
+	void _clearMemorySnapshots();
+	void _resetMemoryBuffer();
 
 	HWND m_windowHandle = nullptr;
 

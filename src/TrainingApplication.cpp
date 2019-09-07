@@ -155,14 +155,13 @@ void TrainingApplication::initialize(HWND _windowHandle)
 	assert(_windowHandle);
 	m_windowHandle = _windowHandle;
 
-	m_memoryBufferSize = SF33_MAXADDRESS;
-	m_memoryBuffer = (uint8_t*)malloc(m_memoryBufferSize);
-
 	m_lock = gcnew SpinLock();
 
 	_loadApplicationData();
 	_loadTrainingData();
 	_loadMemoryLabels();
+
+	_resetMemoryBuffer();
 }
 
 
@@ -201,7 +200,7 @@ void TrainingApplication::onFrameBegin()
 	_resolveMemoryWriteRequests();
 
 	SIZE_T bytesRead = 0;
-	ReadProcessMemory(m_FBAProcessHandle, (void*)m_ramStartingAddress, m_memoryBuffer, SF33_MAXADDRESS, &bytesRead);
+	ReadProcessMemory(m_FBAProcessHandle, (void*)(m_ramStartingAddress + m_applicationData.captureBeginAddress), m_memoryBuffer, m_memoryBufferSize, &bytesRead);
 
 	/*HWND activeWindow = GetForegroundWindow();
 	if (activeWindow == (HWND)(void*)(m_FBAProcess->MainWindowHandle))
@@ -286,6 +285,37 @@ void TrainingApplication::update()
 		{
 			IMGUI_APPDATA(ImGui::MenuItem("Auto attach to FBA", "", &m_applicationData.autoAttach));
 			IMGUI_APPDATA(ImGui::Combo("Docking Mode", (int*)&m_applicationData.dockingMode, "Undocked\0Left\0Right\0\0"));
+			size_t captureBeginAddress = m_applicationData.captureBeginAddress;
+			if (_inputAddress("Capture Begin Address", captureBeginAddress))
+			{
+				if (captureBeginAddress != m_applicationData.captureBeginAddress)
+				{
+					m_applicationData.captureBeginAddress = captureBeginAddress;
+					m_applicationData.captureEndAddress = Max(m_applicationData.captureEndAddress, m_applicationData.captureBeginAddress);
+					m_applicationData.memoryDebuggerData.address = Clamp(m_applicationData.memoryDebuggerData.address, m_applicationData.captureEndAddress, m_applicationData.captureBeginAddress);
+					m_applicationData.memoryDebuggerData.selectionBeginAddress = ~size_t(0);
+					m_applicationData.memoryDebuggerData.selectionEndAddress = ~size_t(0);
+
+					_saveApplicationData();
+					_resetMemoryBuffer();
+				}
+			}
+
+			size_t captureEndAddress = m_applicationData.captureEndAddress;
+			if (_inputAddress("Capture End Address", captureEndAddress))
+			{
+				if (captureEndAddress != m_applicationData.captureEndAddress)
+				{
+					m_applicationData.captureEndAddress = captureEndAddress;
+					m_applicationData.captureEndAddress = Min(m_applicationData.captureEndAddress, m_applicationData.captureBeginAddress);
+					m_applicationData.memoryDebuggerData.address = Clamp(m_applicationData.memoryDebuggerData.address, m_applicationData.captureEndAddress, m_applicationData.captureBeginAddress);
+					m_applicationData.memoryDebuggerData.selectionBeginAddress = ~size_t(0);
+					m_applicationData.memoryDebuggerData.selectionEndAddress = ~size_t(0);
+
+					_saveApplicationData();
+					_resetMemoryBuffer();
+				}
+			}
 			ImGui::EndMenu();
 		}
 
@@ -403,18 +433,18 @@ void TrainingApplication::update()
 
 		// READ SOME SHIT
 		// I believe the bytes that are expected to be 0xff means that a character has been locked, while the byte expected to be 0x02 is the current match state. 0x02 means that round has started and players can move
-		int8_t p1Locked = _readInt8(m_memoryBuffer, 0x020154C8);
-		int8_t p2Locked = _readInt8(m_memoryBuffer, 0x020154CE);
-		uint8_t matchState = _readInt8(m_memoryBuffer, 0x020154A7);
+		int8_t p1Locked = _readMemoryBufferInt8(0x020154C8);
+		int8_t p2Locked = _readMemoryBufferInt8(0x020154CE);
+		uint8_t matchState = _readMemoryBufferInt8(0x020154A7);
 		m_isInMatch = ((p1Locked == int8_t(0xFF) || p2Locked == int8_t(0xFF)) && matchState == uint8_t(0x02));
 		{
-			m_p1GlobalInputFlags = _readUInt16(m_memoryBuffer, 0x0206AA90);
-			m_p1GameInputFlags = _readUInt16(m_memoryBuffer, 0x0202564B);
-			m_p1CoinDown = _readUInt8(m_memoryBuffer, 0x0206AABB);
+			m_p1GlobalInputFlags = _readMemoryBufferUInt16(0x0206AA90);
+			m_p1GameInputFlags = _readMemoryBufferUInt16(0x0202564B);
+			m_p1CoinDown = _readMemoryBufferUInt8(0x0206AABB);
 
-			m_p2GlobalInputFlags = _readUInt16(m_memoryBuffer, 0x0206AA93);
-			m_p2GameInputFlags = _readUInt16(m_memoryBuffer, 0x02025685);
-			m_p2CoinDown = _readUInt8(m_memoryBuffer, 0x00206AAC1);
+			m_p2GlobalInputFlags = _readMemoryBufferUInt16(0x0206AA93);
+			m_p2GameInputFlags = _readMemoryBufferUInt16(0x02025685);
+			m_p2CoinDown = _readMemoryBufferUInt8(0x00206AAC1);
 		}
 
 		if (ImGui::BeginTabBar("MyTabBar", ImGuiTabBarFlags_Reorderable))
@@ -608,9 +638,9 @@ void TrainingApplication::watchFrameChange()
 		{
 			if (m_memorySnapshots.size() <= m_memorySnapshotCount)
 			{
-				m_memorySnapshots.push_back(malloc(SF33_MAXADDRESS));
+				m_memorySnapshots.push_back(malloc(m_memoryBufferSize));
 			}
-			memcpy(m_memorySnapshots[m_memorySnapshotCount], m_memoryBuffer, SF33_MAXADDRESS);
+			memcpy(m_memorySnapshots[m_memorySnapshotCount], m_memoryBuffer, m_memoryBufferSize);
 			++m_memorySnapshotCount;
 
 			m_isMemorySnapshotRequested = false;
@@ -761,15 +791,51 @@ uint16_t TrainingApplication::_readUInt16(void* _memory, size_t _address)
 	return value;
 }
 
+int8_t TrainingApplication::_readMemoryBufferInt8(size_t _address)
+{
+	if (_address < m_applicationData.captureBeginAddress || _address > m_applicationData.captureEndAddress)
+		return 0;
+
+	return _readInt8(m_memoryBuffer, _address - m_applicationData.captureBeginAddress);
+}
+
+uint8_t TrainingApplication::_readMemoryBufferUInt8(size_t _address)
+{
+	if (_address < m_applicationData.captureBeginAddress || _address > m_applicationData.captureEndAddress)
+		return 0;
+
+	return _readUInt8(m_memoryBuffer, _address - m_applicationData.captureBeginAddress);
+}
+
+int16_t TrainingApplication::_readMemoryBufferInt16(size_t _address)
+{
+	if (_address < m_applicationData.captureBeginAddress || _address > m_applicationData.captureEndAddress)
+		return 0;
+
+	return _readInt16(m_memoryBuffer, _address - m_applicationData.captureBeginAddress);
+}
+
+uint16_t TrainingApplication::_readMemoryBufferUInt16(size_t _address)
+{
+	if (_address < m_applicationData.captureBeginAddress || _address > m_applicationData.captureEndAddress)
+		return 0;
+
+	return _readUInt16(m_memoryBuffer, _address - m_applicationData.captureBeginAddress);
+}
+
 size_t TrainingApplication::_incrementAddress(size_t _address, int64_t _increment, size_t _minAddress /*= 0*/, size_t _maxAddress /*= SF33_MAXADDRESS*/)
 {
-	if (_increment < _minAddress && (_increment * -1) > _address)
+	if ((_increment * -1) > _address)
+	{
 		return _minAddress;
+	}
 	else
 	{
 		_address += size_t(_increment);
 		if (_address > _maxAddress)
 			_address = _maxAddress;
+		else if (_address < _minAddress)
+			_address = _minAddress;
 
 		return _address;
 	}
@@ -866,7 +932,7 @@ void TrainingApplication::_updateMemoryDebugger()
 		ImGui::SameLine(0.0f, 15.f);
 
 		size_t address = m_applicationData.memoryDebuggerData.address;
-		_drawMemory(m_memoryBuffer, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
+		_drawMemory(m_memoryBuffer, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
 		if (address != m_applicationData.memoryDebuggerData.address)
 		{
 			_saveApplicationData();
@@ -883,38 +949,6 @@ void TrainingApplication::_updateMemoryRecorder()
 	{
 		ImGui::BeginChild("recording", ImVec2(190.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
 
-		if (_inputAddress("Snapshot Begin", m_applicationData.snapshotRelevantZoneBeginAddress))
-		{
-			m_applicationData.snapshotRelevantZoneBeginAddress -= m_applicationData.snapshotRelevantZoneBeginAddress % 0x10;
-
-			m_applicationData.snapshotRelevantZoneBeginAddress = Clamp(m_applicationData.snapshotRelevantZoneBeginAddress, 0u, SF33_MAXADDRESS);
-			m_applicationData.snapshotRelevantZoneBeginAddress = Min(m_applicationData.snapshotRelevantZoneBeginAddress, m_applicationData.snapshotRelevantZoneEndAddress);
-
-			m_applicationData.snapshotBeginAddress = Max(m_applicationData.snapshotBeginAddress, m_applicationData.snapshotRelevantZoneBeginAddress);
-
-			m_applicationData.memoryDebuggerData.address = Clamp(m_applicationData.memoryDebuggerData.address, m_applicationData.snapshotRelevantZoneBeginAddress, m_applicationData.snapshotRelevantZoneEndAddress);
-
-			_saveApplicationData();
-
-			m_isMemoryRecorderMapDirty = true;
-		}
-
-		if (_inputAddress("Snapshot End", m_applicationData.snapshotRelevantZoneEndAddress))
-		{
-			m_applicationData.snapshotRelevantZoneEndAddress -= m_applicationData.snapshotRelevantZoneEndAddress % 0x10;
-
-			m_applicationData.snapshotRelevantZoneEndAddress = Clamp(m_applicationData.snapshotRelevantZoneEndAddress, 0u, SF33_MAXADDRESS);
-			m_applicationData.snapshotRelevantZoneEndAddress = Max(m_applicationData.snapshotRelevantZoneEndAddress, m_applicationData.snapshotRelevantZoneBeginAddress);
-
-			m_applicationData.snapshotEndAddress = Max(m_applicationData.snapshotEndAddress, m_applicationData.snapshotRelevantZoneEndAddress);
-
-			m_applicationData.memoryDebuggerData.address = Clamp(m_applicationData.memoryDebuggerData.address, m_applicationData.snapshotRelevantZoneBeginAddress, m_applicationData.snapshotRelevantZoneEndAddress);
-
-			_saveApplicationData();
-
-			m_isMemoryRecorderMapDirty = true;
-		}
-
 		if (m_memorySnapshotCount < MAX_MEMORYSNAPSHOT)
 		{
 			ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(200, 0, 0, 255));
@@ -926,13 +960,7 @@ void TrainingApplication::_updateMemoryRecorder()
 		{
 			if (ImGui::Button("Clear Snapshots"))
 			{
-				m_memorySnapshotCount = 0;
-				m_displayedMemorySnapshot = 0;
-
-				m_skipDifferencesList.clear();
-				m_checkDifferencesList.clear();
-
-				m_isMemoryRecorderMapDirty = true;
+				_clearMemorySnapshots();
 			}
 		}
 
@@ -1081,8 +1109,8 @@ void TrainingApplication::_updateMemoryRecorder()
 		ImVec2 size = ImGui::GetContentRegionAvail();
 		ImVec2 pos = ImGui::GetCursorScreenPos();
 		ImVec2 mousePos = ImGui::GetMousePos();
-		size_t addressRange = m_applicationData.snapshotEndAddress - m_applicationData.snapshotBeginAddress;
-		size_t relevantZoneRange = m_applicationData.snapshotRelevantZoneEndAddress - m_applicationData.snapshotRelevantZoneBeginAddress;
+		size_t addressRange = m_applicationData.mapEndAddress - m_applicationData.mapBeginAddress;
+		size_t captureZoneRange = m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress;
 
 		bool isMouseOverMap = mousePos.x >= pos.x && mousePos.x <= pos.x + size.x && mousePos.y > pos.y && mousePos.y <= pos.y + size.y;
 
@@ -1113,22 +1141,22 @@ void TrainingApplication::_updateMemoryRecorder()
 			{
 				size_t delta = size_t(float(addressRange) * t);
 
-				m_applicationData.snapshotBeginAddress += delta;
-				m_applicationData.snapshotBeginAddress -= m_applicationData.snapshotBeginAddress % 0x10;
+				m_applicationData.mapBeginAddress += delta;
+				m_applicationData.mapBeginAddress -= m_applicationData.mapBeginAddress % 0x10;
 
-				if (delta > addressRange && m_applicationData.snapshotBeginAddress > SF33_MAXADDRESS) // Negative delta
+				if (delta > addressRange && m_applicationData.mapBeginAddress > SF33_MAXADDRESS) // Negative delta
 				{
-					m_applicationData.snapshotBeginAddress = m_applicationData.snapshotRelevantZoneBeginAddress;
+					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
 				}
-				else if (m_applicationData.snapshotBeginAddress < m_applicationData.snapshotRelevantZoneBeginAddress)
+				else if (m_applicationData.mapBeginAddress < m_applicationData.captureBeginAddress)
 				{
-					m_applicationData.snapshotBeginAddress = m_applicationData.snapshotRelevantZoneBeginAddress;
+					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
 				}
-				else if (m_applicationData.snapshotBeginAddress + addressRange > m_applicationData.snapshotRelevantZoneEndAddress)
+				else if (m_applicationData.mapBeginAddress + addressRange > m_applicationData.captureEndAddress)
 				{
-					m_applicationData.snapshotBeginAddress = m_applicationData.snapshotRelevantZoneBeginAddress - addressRange;
+					m_applicationData.mapBeginAddress = m_applicationData.captureEndAddress - addressRange;
 				}
-				m_applicationData.snapshotEndAddress = m_applicationData.snapshotBeginAddress + addressRange;
+				m_applicationData.mapEndAddress = m_applicationData.mapBeginAddress + addressRange;
 
 				m_isMemoryRecorderMapDirty = true;
 			}
@@ -1137,7 +1165,8 @@ void TrainingApplication::_updateMemoryRecorder()
 		// ZOOM
 		if (isMouseOverMap)
 		{
-			size_t centralAddress = m_applicationData.memoryDebuggerData.address;
+			float cursorRatio = (mousePos.y - pos.y) / size.y;
+			size_t pivotAddress = m_applicationData.mapBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
 
 			float mouseWheel = ImGui::GetIO().MouseWheel;
 			float zoomRatio = 1.f;
@@ -1152,26 +1181,30 @@ void TrainingApplication::_updateMemoryRecorder()
 			}
 			if (zoomRatio != 1.f)
 			{
-
-				float t = float(double(centralAddress - m_applicationData.snapshotBeginAddress) / double(addressRange));
-
 				addressRange = size_t(float(addressRange) * zoomRatio);
 				addressRange -= addressRange % 0x10;
-				addressRange = Clamp(addressRange, size_t(size.y), relevantZoneRange);
+				addressRange = Clamp(addressRange, size_t(size.y) * 0x10, captureZoneRange);
 
-				size_t delta = size_t(t * float(addressRange));
-				if (delta > centralAddress)
-				{
-					delta = centralAddress;
-				}
-				if (centralAddress + (addressRange - delta) > m_applicationData.snapshotRelevantZoneEndAddress)
-				{
-					delta = centralAddress - (m_applicationData.snapshotRelevantZoneEndAddress - addressRange);
+				size_t lowerAddressRangeHalf = size_t(float(addressRange) * cursorRatio);
 
+				if (pivotAddress - m_applicationData.captureBeginAddress < lowerAddressRangeHalf)
+				{
+					m_applicationData.mapBeginAddress = m_applicationData.captureBeginAddress;
 				}
-				m_applicationData.snapshotBeginAddress = centralAddress - delta;
-				m_applicationData.snapshotBeginAddress -= m_applicationData.snapshotBeginAddress % 0x10;
-				m_applicationData.snapshotEndAddress = m_applicationData.snapshotBeginAddress + addressRange;
+				else if (pivotAddress > m_applicationData.captureEndAddress - (addressRange - lowerAddressRangeHalf))
+				{
+					m_applicationData.mapBeginAddress = m_applicationData.captureEndAddress - addressRange;
+				}
+				else
+				{
+					m_applicationData.mapBeginAddress = pivotAddress - lowerAddressRangeHalf;
+				}
+
+				m_applicationData.mapBeginAddress -= m_applicationData.mapBeginAddress % 0x10;
+				m_applicationData.mapEndAddress = m_applicationData.mapBeginAddress + addressRange;
+
+				assert(m_applicationData.mapBeginAddress >= m_applicationData.captureBeginAddress);
+				assert(m_applicationData.mapEndAddress <= m_applicationData.captureEndAddress);
 
 				m_isMemoryRecorderMapDirty = true;
 			}
@@ -1187,7 +1220,7 @@ void TrainingApplication::_updateMemoryRecorder()
 		if (m_isMemoryRecorderMapDirty)
 		{
 
-			_buildMemoryRecorderMap(m_memorySnapshots, m_applicationData.snapshotBeginAddress, m_applicationData.snapshotEndAddress, size.x, size.y, m_skipDifferencesList, m_checkDifferencesList);
+			_buildMemoryRecorderMap(m_memorySnapshots, m_applicationData.mapBeginAddress, m_applicationData.mapEndAddress, size.x, size.y, m_skipDifferencesList, m_checkDifferencesList);
 			m_memoryRecorderMapWidth = size.x;
 			m_memoryRecorderMapHeight = size.y;
 			m_isMemoryRecorderMapDirty = false;
@@ -1202,33 +1235,35 @@ void TrainingApplication::_updateMemoryRecorder()
 			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + start), ImVec2(pos.x + size.x, pos.y + start + length + 1), IM_COL32(255, 0, 0, 200));
 		}
 
-		if (isMouseOverMap)
 		{
-			ImGui::BeginTooltip();
-
-			size_t address = m_applicationData.snapshotBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
+			size_t address = m_applicationData.mapBeginAddress + size_t(mousePos.y - pos.y) * (addressRange / size_t(size.y));
 			address -= address % 0x10;
+			address = Clamp(address, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress);
 
-			ImGui::Text("0x%08X", address);
+			if (isMouseOverMap)
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("0x%08X", address);
+				ImGui::EndTooltip();
+			}
 			
 			if (m_isLeftMouseDraggingMemoryMap)
 			{
 				m_applicationData.memoryDebuggerData.address = address;
 			}
-
-			ImGui::EndTooltip();
 		}
 		
 		// CURRENT ADDRESS CURSOR
 		{
-			float currentAddressY = float(double(m_applicationData.memoryDebuggerData.address - m_applicationData.snapshotBeginAddress) / double(addressRange)) * size.y;
+			float currentAddressY = float(double(m_applicationData.memoryDebuggerData.address - m_applicationData.mapBeginAddress) / double(addressRange)) * size.y;
 			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x, pos.y + currentAddressY), ImVec2(pos.x + size.x, pos.y + currentAddressY + 1.f), IM_COL32(255, 255, 0, 200));
 		}
 
 		// RATIO CURSOR
 		{
-			float begin = float(double(m_applicationData.snapshotBeginAddress) / double(SF33_MAXADDRESS));
-			float end = float(double(m_applicationData.snapshotEndAddress) / double(SF33_MAXADDRESS));
+			float captureSize = float(m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress);
+			float begin = float(double(m_applicationData.mapBeginAddress - m_applicationData.captureBeginAddress) / captureSize);
+			float end = float(double(m_applicationData.mapEndAddress - m_applicationData.captureBeginAddress) / captureSize);
 			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(pos.x + size.x - 10.f, pos.y + size.y * begin), ImVec2(pos.x + size.x - 3.f, pos.y + size.y * end), IM_COL32(255, 255, 255, 40));
 		}
 
@@ -1239,7 +1274,7 @@ void TrainingApplication::_updateMemoryRecorder()
 
 	if (m_memorySnapshotCount > 0)
 	{
-		_drawMemory(m_memorySnapshots[m_displayedMemorySnapshot], m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
+		_drawMemory(m_memorySnapshots[m_displayedMemorySnapshot], m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress, m_applicationData.memoryDebuggerData, m_memoryLabels, m_selectedLabel);
 	}
 }
 
@@ -1252,8 +1287,10 @@ void TrainingApplication::_loadApplicationData()
 {
 	mirror::LoadFromFile(m_applicationData, s_applicationDataFileName);
 
-	m_applicationData.snapshotBeginAddress = Max(m_applicationData.snapshotBeginAddress, m_applicationData.snapshotRelevantZoneBeginAddress);
-	m_applicationData.snapshotEndAddress = Min(m_applicationData.snapshotEndAddress, m_applicationData.snapshotRelevantZoneEndAddress);
+	m_applicationData.memoryDebuggerData.address = Clamp(m_applicationData.memoryDebuggerData.address, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress);
+
+	m_applicationData.mapBeginAddress = Max(m_applicationData.mapBeginAddress, m_applicationData.captureBeginAddress);
+	m_applicationData.mapEndAddress = Min(m_applicationData.mapEndAddress, m_applicationData.captureEndAddress);
 
 	SetWindowPos(m_windowHandle, nullptr, m_applicationData.windowX, m_applicationData.windowY, m_applicationData.windowW, m_applicationData.windowH, SWP_NOZORDER);
 }
@@ -1398,7 +1435,7 @@ void TrainingApplication::_displayGameObjectData(const GameObjectData& _data)
 	}
 }
 
-void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel)
+void TrainingApplication::_drawMemory(void* _memory, size_t _startAddress, size_t _endAddress, MemoryDisplayData& _data, std::vector<MemoryLabel>& _labels, int _selectedLabel)
 {
 	static const size_t colCount = 0x10;
 
@@ -1415,6 +1452,8 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 	size_t rowCount = size_t(ImGui::GetContentRegionAvail().y / rowHeight);
 	size_t bytesToRead = colCount * rowCount;
 	ImVec2 size = ImVec2(addressSize.x + addressesMarginWidth + colCount * (byteSize.x + byteMarginWidth) + centralMarginWidth, rowHeight * rowCount);
+
+	size_t startingAddress = Min(_data.address, m_applicationData.captureEndAddress - (rowCount - 1) * (0x10));
 
 	ImGui::BeginChild("memory", size, false, ImGuiWindowFlags_NoResize);
 
@@ -1436,7 +1475,7 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 			if (_pos.x <= firstTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
 				&& _pos.y <= firstTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
 			{
-				address = _data.address + (0x10 * addressY) + addressX;
+				address = startingAddress + (0x10 * addressY) + addressX;
 			}
 		}
 		else if (_pos.x >= secondTableBasePos.x && _pos.x <= secondTableBasePos.x + tableSize.x && _pos.y >= secondTableBasePos.y && _pos.y <= secondTableBasePos.y + tableSize.y)
@@ -1447,7 +1486,7 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 			if (_pos.x <= secondTableBasePos.x + addressX * (byteSize.x + byteMarginWidth) + byteSize.x
 				&& _pos.y <= secondTableBasePos.y + addressY * (byteSize.y + rowMarginHeight) + byteSize.y)
 			{
-				address = _data.address + (0x10 * addressY) + addressX + 0x08;
+				address = startingAddress + (0x10 * addressY) + addressX + 0x08;
 			}
 		}
 		return address;
@@ -1457,6 +1496,7 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 	size_t hoveredAddress = computeAddressAtPos(mp);
 	bool isMouseOverMemory = mp.x >= basePos.x && mp.x <= basePos.x + size.x && mp.y >= basePos.y && mp.y <= basePos.y + size.y;
 	bool isMemorySelectionPopupOpen = ImGui::IsPopupOpen("memorySelection");
+
 
 	// PRECOMPUTE BYTE INFO
 	struct ByteInfo
@@ -1475,7 +1515,7 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 		s_byteInfo[i].selected = false;
 		s_byteInfo[i].labels.clear();
 
-		size_t address = _data.address + i;
+		size_t address = startingAddress + i;
 
 		if (address == hoveredAddress)
 			s_byteInfo[i].hovered = true;
@@ -1532,13 +1572,13 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 	ImColor c = IM_COL32(255, 255, 255, 255);
 	for (size_t row = 0; row < rowCount; ++row)
 	{
-		sprintf(buf, "0x%08X", _data.address + row * 0x10);
+		sprintf(buf, "0x%08X", startingAddress + row * 0x10);
 		ImGui::GetWindowDrawList()->AddText(ImVec2(basePos.x, basePos.y + row * rowHeight), IM_COL32(255, 255, 255, 127), buf);
 		ImVec2 pos = ImVec2(basePos.x + addressSize.x + addressesMarginWidth, basePos.y + row * rowHeight);
 		for (size_t col = 0; col < colCount; ++col)
 		{
 			size_t byteRelativeAddress = row * 0x10 + col;
-			size_t byteAddress = _data.address + byteRelativeAddress;
+			size_t byteAddress = startingAddress + byteRelativeAddress;
 			ImVec2 bytePos = ImVec2(pos.x + col * (byteSize.x + byteMarginWidth) + (col >= 0x8 ? centralMarginWidth : 0.f), pos.y);
 
 			ImVec2 rectA = bytePos;
@@ -1569,7 +1609,7 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 				ImGui::GetWindowDrawList()->AddRectFilled(rectA, rectB, col);
 			}
 
-			sprintf(buf, "%02X", ((uint8_t*)_memory)[byteAddress]);
+			sprintf(buf, "%02X", ((uint8_t*)_memory)[byteAddress - _startAddress]);
 			ImGui::GetWindowDrawList()->AddText(bytePos, IM_COL32(255, 255, 255, 255), buf);
 
 			if (s_byteInfo[byteRelativeAddress].hovered && !s_byteInfo[byteRelativeAddress].labels.empty())
@@ -1595,7 +1635,7 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 		if (selectionLength <= 4)
 		{
 			uint32_t data = 0u;
-			_copyReverse(reinterpret_cast<uint8_t*>(_memory) + _data.selectionBeginAddress, reinterpret_cast<uint8_t*>(&data), selectionLength);
+			_copyReverse(reinterpret_cast<uint8_t*>(_memory) + _data.selectionBeginAddress - _startAddress, reinterpret_cast<uint8_t*>(&data), selectionLength);
 			sprintf(addressBuffer, "0x%08X\0", data);
 			_sanitizeAddressString(addressBuffer, selectionLength * 2);
 			if (ImGui::InputText("data", addressBuffer, selectionLength * 2 + 3, ImGuiInputTextFlags_EnterReturnsTrue))
@@ -1670,22 +1710,22 @@ void TrainingApplication::_drawMemory(void* _memory, MemoryDisplayData& _data, s
 		float mouseWheel = ImGui::GetIO().MouseWheel;
 		if (mouseWheel < 0.f)
 		{
-			_data.address = _incrementAddress(_data.address, 0x10);
+			_data.address = _incrementAddress(_data.address, 0x10, _startAddress, _endAddress);
 			_saveApplicationData();
 		}
 		else if (mouseWheel > 0.f)
 		{
-			_data.address = _incrementAddress(_data.address, -0x10);
+			_data.address = _incrementAddress(_data.address, -0x10, _startAddress, _endAddress);
 			_saveApplicationData();
 		}
 	}
 	if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageUp)))
 	{
-		_data.address = _incrementAddress(_data.address, -(int32_t)(rowCount * 0x10));
+		_data.address = _incrementAddress(_data.address, -(int32_t)(rowCount * 0x10), _startAddress, _endAddress);
 	}
 	if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_PageDown)))
 	{
-		_data.address = _incrementAddress(_data.address, (int32_t)(rowCount * 0x10));
+		_data.address = _incrementAddress(_data.address, (int32_t)(rowCount * 0x10), _startAddress, _endAddress);
 	}
 }
 
@@ -1695,10 +1735,11 @@ void TrainingApplication::_drawNavigationPanel(MemoryDisplayData& _data, std::ve
 
 	// BASE ADDRESS
 	{
-		if (_inputAddress("Address", _data.address))
+		size_t address = _data.address;
+		if (_inputAddress("Address", address))
 		{
-			_data.address -= _data.address % 0x10;
-			_data.address = Clamp(_data.address, 0u, SF33_MAXADDRESS);
+			address -= address % 0x10;
+			_data.address = Clamp(address, m_applicationData.captureBeginAddress, m_applicationData.captureEndAddress);
 
 			_saveApplicationData();
 		}
@@ -1804,7 +1845,7 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 		{
 			for (size_t k = 1; k < _skipDifferencesList.size(); ++k)
 			{
-				if (0 != memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address, compareSize))
+				if (0 != memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_skipDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, compareSize))
 				{
 					skip = true;
 					break;
@@ -1817,7 +1858,7 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 		bool differ = false;
 		for (size_t k = 1; k < _checkDifferencesList.size(); ++k)
 		{
-			if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address, compareSize))
+			if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, compareSize))
 			{
 				differ = true;
 				break;
@@ -1856,4 +1897,33 @@ bool TrainingApplication::_inputAddress(const char* label, size_t& _address)
 	_sanitizeAddressString(addressBuffer, 8);
 	_address = strtol(addressBuffer, nullptr, 0);
 	return result;
+}
+
+void TrainingApplication::_clearMemorySnapshots()
+{
+	m_memorySnapshotCount = 0;
+	m_displayedMemorySnapshot = 0;
+
+	m_skipDifferencesList.clear();
+	m_checkDifferencesList.clear();
+
+	m_isMemoryRecorderMapDirty = true;
+}
+
+void TrainingApplication::_resetMemoryBuffer()
+{
+	_clearMemorySnapshots();
+
+	// reserved snapshot memory is not at the right size anymore. We have to clear it
+	for (size_t i = 0; i < m_memorySnapshots.size(); ++i)
+	{
+		free(m_memorySnapshots[i]);
+	}
+	m_memorySnapshotCount = 0;
+	m_memorySnapshots.clear();
+
+	free(m_memoryBuffer);
+
+	m_memoryBufferSize = m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress;
+	m_memoryBuffer = (uint8_t*)malloc(m_memoryBufferSize);
 }
