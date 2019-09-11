@@ -24,7 +24,7 @@ char s_calibrationSequence[] = { 0x78, 0x00, 0x79, 0x00, 0x76, 0x00 };
 size_t s_calibrationSequenceOffset = 0x160B1B94 - 0x161091C0 - 0x02011377;
 
 
-enum class GlobalInputFlags : uint32_t
+enum GlobalInputFlags
 {
 	GlobalInputFlags_Up = 0x0100,
 	GlobalInputFlags_Down = 0x0200,
@@ -39,7 +39,7 @@ enum class GlobalInputFlags : uint32_t
 	GlobalInputFlags_Start = 0x0010
 };
 
-enum class GameInputFlags : uint32_t
+enum GameInputFlags
 {
 	GameInputFlags_Up = 0x0001,
 	GameInputFlags_Down = 0x0002,
@@ -446,6 +446,47 @@ void TrainingApplication::update()
 			m_p2GameInputFlags = _readMemoryBufferUInt16(0x02025685);
 			m_p2CoinDown = _readMemoryBufferUInt8(0x00206AAC1);
 		}
+
+
+		static uint8_t m_mythoNeutralCountdown = 0;
+		static uint8_t m_actualNeutralCountdown = 0;
+		if (m_isInMatch)
+		{
+			m_P2IsFacingRight = _readMemoryBufferInt8(0x0206910F);
+
+			/*uint8_t a = _readMemoryBufferUInt8(0x0206914D);
+			if (a != 0)
+			{
+				printf("%d - ", a);
+			}
+			uint8_t b = _readMemoryBufferUInt8(0x0206914B);
+			if (b != 0)d
+			{
+				printf("%d\n", b);
+			}*/
+
+			uint8_t neutralCountdown = _readMemoryBufferInt8(0x0206928B);
+			if (m_mythoNeutralCountdown == 0 && neutralCountdown != 0)
+			{
+				m_actualNeutralCountdown = neutralCountdown + 1;
+			}
+			m_mythoNeutralCountdown = neutralCountdown;
+
+			if (m_actualNeutralCountdown == 1)
+			{
+				uint16_t inputs[] = { GameInputFlags_Up };
+				_queueP2InputSequence(inputs, 1);
+				printf("jump\n");
+			}
+
+			if (m_actualNeutralCountdown > 0)
+			{
+				printf("%d\n", m_actualNeutralCountdown);
+				--m_actualNeutralCountdown;
+			}
+		}
+
+		_processPendingP2InputSequences();
 
 		if (ImGui::BeginTabBar("MyTabBar", ImGuiTabBarFlags_Reorderable))
 		{
@@ -951,7 +992,7 @@ void TrainingApplication::_updateMemoryRecorder()
 	ImGui::SameLine(0.f, 15.f);
 
 	{
-		ImGui::BeginChild("recording", ImVec2(190.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
+		ImGui::BeginChild("recording", ImVec2(210.f, 0.f), false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
 
 		if (m_memorySnapshotCount < MAX_MEMORYSNAPSHOT)
 		{
@@ -973,6 +1014,133 @@ void TrainingApplication::_updateMemoryRecorder()
 		{
 			ImGui::SliderInt("Snapshot", &m_displayedMemorySnapshot, 0, m_memorySnapshotCount - 1);
 
+			assert(m_snapshotComparisonConditions.size() == 0 || m_snapshotComparisonOperators.size() == m_snapshotComparisonConditions.size() - 1);
+
+			auto memorySnapshotCombo = [=](int& _index) -> bool
+			{
+				char buf[12] = {};
+				if (_index >= 0)
+					sprintf(buf, "%d", _index);
+
+				int baseIndex = _index;
+
+				if (ImGui::BeginCombo("", buf))
+				{
+					for (size_t i = 0; i < m_memorySnapshots.size(); ++i)
+					{
+						bool is_selected = (_index == i);
+						sprintf(buf, "%d", i);
+						if (ImGui::Selectable(buf, is_selected))
+							_index = i;
+						if (is_selected)
+							ImGui::SetItemDefaultFocus();   // Set the initial focus when opening the combo (scrolling + for keyboard navigation support in the upcoming navigation branch)
+					}
+					ImGui::EndCombo();
+				}
+
+				return baseIndex != _index;
+			};
+
+			for (size_t i = 0; i < m_snapshotComparisonConditions.size(); ++i)
+			{
+				SnapshotComparisonCondition& condition = m_snapshotComparisonConditions[i];
+
+				char id[16] = {};
+				sprintf(id, "cond%d", i);
+
+				ImGui::PushItemWidth(40.f);
+				ImGui::PushID(id);
+
+				ImGui::PushID("leftSnapshot");
+				if (memorySnapshotCombo(condition.leftSnaphsot))
+				{
+					_updateValidHighlightConditions();
+					m_isMemoryRecorderMapDirty = true;
+				}
+				ImGui::PopID();
+				ImGui::SameLine();
+				ImGui::PushID("comparison");
+				if (ImGui::Combo("", (int*)&condition.shouldMatch, "!=\0==\0\0"))
+				{
+					_updateValidHighlightConditions();
+					m_isMemoryRecorderMapDirty = true;
+				}
+				ImGui::PopID();
+				ImGui::SameLine();
+				ImGui::PushID("rightSnapshot");
+				if (memorySnapshotCombo(condition.rightSnaphsot))
+				{
+					_updateValidHighlightConditions();
+					m_isMemoryRecorderMapDirty = true;
+				}
+				ImGui::PopID();
+
+				ImGui::SameLine();
+				if (ImGui::Button("^"))
+				{
+					if (i > 0)
+					{
+						std::swap(m_snapshotComparisonConditions[i - 1], m_snapshotComparisonConditions[i]);
+						_updateValidHighlightConditions();
+						m_isMemoryRecorderMapDirty = true;
+					}
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("v"))
+				{
+					if (i < m_snapshotComparisonConditions.size() - 1)
+					{
+						std::swap(m_snapshotComparisonConditions[i + 1], m_snapshotComparisonConditions[i]);
+						_updateValidHighlightConditions();
+						m_isMemoryRecorderMapDirty = true;
+					}
+				}
+				ImGui::SameLine();
+				ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(255, 0, 0, 255));
+				if (ImGui::Button("x"))
+				{
+					if (i == m_snapshotComparisonConditions.size() - 1)
+					{
+						if (m_snapshotComparisonOperators.size() > 0)
+						{
+							m_snapshotComparisonOperators.erase(m_snapshotComparisonOperators.end() - 1);
+						}
+					}
+					else
+					{
+						m_snapshotComparisonOperators.erase(m_snapshotComparisonOperators.begin() + i);
+					}
+
+					m_snapshotComparisonConditions.erase(m_snapshotComparisonConditions.begin() + i);
+					_updateValidHighlightConditions();
+					m_isMemoryRecorderMapDirty = true;
+				}
+				ImGui::PopStyleColor();
+
+				ImGui::PopItemWidth();
+
+				if (i < m_snapshotComparisonOperators.size())
+				{
+					ImGui::Separator();
+					ImGui::PushItemWidth(60.f);
+					ImGui::Combo("", (int*)&m_snapshotComparisonOperators[i], "AND\0OR\0\0");
+					ImGui::PopItemWidth();
+					ImGui::Separator();
+				}
+
+				ImGui::PopID();
+			}
+
+			if (ImGui::Button("Add Condition"))
+			{
+				m_snapshotComparisonConditions.push_back(SnapshotComparisonCondition());
+				if (m_snapshotComparisonConditions.size() > 1)
+				{
+					m_snapshotComparisonOperators.push_back(SnapshotComparisonOperator_And);
+					m_isMemoryRecorderMapDirty = true;
+				}
+			}
+			/*
 			ImGui::PushStyleColor(ImGuiCol_ChildWindowBg, IM_COL32(255, 255, 255, 20));
 			ImGui::Text("Skip differences list");
 			ImGui::BeginChild("SkipCheckList", ImVec2(ImGui::GetWindowContentRegionWidth(), 150.f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
@@ -1100,6 +1268,7 @@ void TrainingApplication::_updateMemoryRecorder()
 			}
 
 			ImGui::PopStyleColor();
+			*/
 		}
 
 		ImGui::EndChild();
@@ -1672,9 +1841,6 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 	if (_snapshots.size() == 0)
 		return;
 
-	if (_checkDifferencesList.size() < 2)
-		return;
-
 	size_t mapHeight = size_t(_mapHeight);
 	size_t snapshotDataSize = (_endAddress - _beginAddress) / 0x10;
 	size_t lineDataSize = snapshotDataSize / mapHeight;
@@ -1688,29 +1854,7 @@ void TrainingApplication::_buildMemoryRecorderMap(const std::vector<void*> _snap
 			size_t address = _beginAddress + (i * lineDataSize * 0x10) + (j * 0x10);
 			assert(address <= m_applicationData.captureEndAddress);
 
-			for (size_t k = 1; k < _checkDifferencesList.size(); ++k)
-			{
-				if (0 != memcmp((uint8_t*)(_snapshots[_checkDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_checkDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, 0x10))
-				{
-					if (_skipDifferencesList.size() >= 2)
-					{
-						for (size_t l = 1; l < _skipDifferencesList.size(); ++l)
-						{
-							if (0 == memcmp((uint8_t*)(_snapshots[_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(_snapshots[_skipDifferencesList[l]]) + address - m_applicationData.captureBeginAddress, 0x10))
-							{
-								differ = true;
-							}
-						}
-					}
-					else
-					{
-						differ = true;
-					}
-				}
-
-				if (differ)
-					break;
-			}
+			differ = _checkHighlightCondition(address);
 
 			if (differ)
 				break;
@@ -1756,31 +1900,11 @@ void TrainingApplication::_computeMemoryDeltaHighlights(size_t _beginAddress, si
 	_highlights.clear();
 	_highlights.resize(range, false);
 
-	if (m_checkDifferencesList.size() < 2)
-		return;
+
 
 	for (size_t address = _beginAddress; address <= _endAddress; ++address)
 	{
-		for (size_t j = 1; j < m_checkDifferencesList.size(); ++j)
-		{
-			if (0 != memcmp((uint8_t*)(m_memorySnapshots[m_checkDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(m_memorySnapshots[m_checkDifferencesList[j]]) + address - m_applicationData.captureBeginAddress, 0x1))
-			{
-				if (m_skipDifferencesList.size() >= 2)
-				{
-					for (size_t k = 1; k < m_skipDifferencesList.size(); ++k)
-					{
-						if (0 == memcmp((uint8_t*)(m_memorySnapshots[m_skipDifferencesList[0]]) + address - m_applicationData.captureBeginAddress, (uint8_t*)(m_memorySnapshots[m_skipDifferencesList[k]]) + address - m_applicationData.captureBeginAddress, 0x1))
-						{
-							_highlights[address - _beginAddress] = true;
-						}
-					}
-				}
-				else
-				{
-					_highlights[address - _beginAddress] = true;
-				}
-			}
-		}
+		_highlights[address - _beginAddress] = _checkHighlightCondition(address);
 	}
 }
 
@@ -1811,6 +1935,190 @@ void TrainingApplication::_resetMemoryBuffer()
 
 	m_memoryBufferSize = m_applicationData.captureEndAddress - m_applicationData.captureBeginAddress;
 	m_memoryBuffer = (uint8_t*)malloc(m_memoryBufferSize);
+}
+
+void TrainingApplication::_updateValidHighlightConditions()
+{
+	m_validSnapshotComparisonConditions.clear();
+
+	for (size_t i = 0; i < m_snapshotComparisonConditions.size(); ++i)
+	{
+		SnapshotComparisonCondition& condition = m_snapshotComparisonConditions[i];
+
+		if (condition.leftSnaphsot < 0 || condition.leftSnaphsot >= int(m_memorySnapshots.size())) continue;
+		if (condition.rightSnaphsot < 0 || condition.rightSnaphsot >= int(m_memorySnapshots.size())) continue;
+
+		m_validSnapshotComparisonConditions.push_back(i);
+	}
+}
+
+bool TrainingApplication::_checkHighlightCondition(size_t _address)
+{
+	if (m_validSnapshotComparisonConditions.size() == 0)
+		return false;
+
+	bool result = true;
+	for (size_t i = 0; i < m_validSnapshotComparisonConditions.size(); ++i)
+	{
+		size_t conditionIndex = m_validSnapshotComparisonConditions[i];
+		SnapshotComparisonCondition& condition = m_snapshotComparisonConditions[conditionIndex];
+
+		if (condition.leftSnaphsot < 0 || condition.leftSnaphsot >= int(m_memorySnapshots.size())) continue;
+		if (condition.rightSnaphsot < 0 || condition.rightSnaphsot >= int(m_memorySnapshots.size())) continue;
+
+		uint8_t l = reinterpret_cast<uint8_t*>(m_memorySnapshots[condition.leftSnaphsot])[_address - m_applicationData.captureBeginAddress];
+		uint8_t r = reinterpret_cast<uint8_t*>(m_memorySnapshots[condition.rightSnaphsot])[_address - m_applicationData.captureBeginAddress];
+
+		SnapshotComparisonOperator op = i == 0 ? SnapshotComparisonOperator_And : m_snapshotComparisonOperators[conditionIndex - 1];
+		switch (op)
+		{
+		case SnapshotComparisonOperator_And: result = result && (condition.shouldMatch ? (l == r) : (l != r));
+			break;
+		case SnapshotComparisonOperator_Or: result = result || (condition.shouldMatch ? (l == r) : (l != r));
+			break;
+		}
+	}
+	return result;
+}
+
+void TrainingApplication::_queueP2InputSequence(uint16_t* _sequence, size_t _sequenceSize)
+{
+	if (_sequenceSize == 0)
+		return;
+
+	InputSequence sequence;
+	sequence.sequence.resize(_sequenceSize);
+
+	for (size_t i = 0; i < _sequenceSize; ++i)
+	{
+		sequence.sequence[i] = _sequence[i];
+	}
+
+	m_pendingP2InputSequences.push_back(sequence);
+}
+
+GameInput GameInputFlagToGameInput(GameInputFlags _flag)
+{
+	switch (_flag)
+	{
+	case GameInputFlags_Up: return GameInput_Up;
+	case GameInputFlags_Down: return GameInput_Down;
+	case GameInputFlags_Left: return GameInput_Left;
+	case GameInputFlags_Right: return GameInput_Right;
+	case GameInputFlags_LP: return GameInput_LP;
+	case GameInputFlags_MP: return GameInput_MP;
+	case GameInputFlags_HP: return GameInput_HP;
+	case GameInputFlags_LK: return GameInput_LK;
+	case GameInputFlags_MK: return GameInput_MK;
+	case GameInputFlags_HK: return GameInput_HK;
+	}
+
+	return GameInput_COUNT;
+}
+
+void TrainingApplication::_processPendingP2InputSequences()
+{
+	HWND activeWindow = GetForegroundWindow();
+
+	for (auto it = m_pendingP2InputSequences.begin(); it != m_pendingP2InputSequences.end();)
+	{
+		uint16_t lastInput = 0;
+		uint16_t input = 0;
+		if (it->currentFrame == 0)
+		{
+			lastInput = 0;
+		}
+		else
+		{
+			lastInput = it->sequence[it->currentFrame - 1];
+		}
+
+		if (it->currentFrame == it->sequence.size())
+		{
+			input = 0;
+		}
+		else
+		{
+			input = it->sequence[it->currentFrame];
+		}
+
+		// reverse input
+		if (!m_P2IsFacingRight)
+		{
+			if ((lastInput & GameInputFlags_Left))
+			{
+				lastInput = lastInput & ~GameInputFlags_Left;
+				lastInput = lastInput | GameInputFlags_Right;
+			}
+
+			if ((lastInput & GameInputFlags_Right))
+			{
+				lastInput = lastInput & ~GameInputFlags_Right;
+				lastInput = lastInput | GameInputFlags_Left;
+			}
+
+			if ((input & GameInputFlags_Left))
+			{
+				input = input & ~GameInputFlags_Left;
+				input = input | GameInputFlags_Right;
+			}
+
+			if ((input & GameInputFlags_Right))
+			{
+				input = input & ~GameInputFlags_Right;
+				input = input | GameInputFlags_Left;
+			}
+		}
+
+		if (activeWindow == (HWND)(void*)(m_FBAProcess->MainWindowHandle))
+		{
+			static std::vector<INPUT> s_inputs;
+			s_inputs.clear();
+
+			auto handleInput = [=](GameInputFlags _gameInputFlag)
+			{
+				if (input & _gameInputFlag && !(lastInput & _gameInputFlag))
+				{
+					INPUT input = {};
+					input.type = INPUT_KEYBOARD;
+					input.ki.wVk = m_p2Keys[GameInputFlagToGameInput(_gameInputFlag)];
+					input.ki.dwFlags = 0;
+					s_inputs.push_back(input);
+				}
+				if (lastInput & _gameInputFlag && !(input & _gameInputFlag))
+				{
+					INPUT input = {};
+					input.type = INPUT_KEYBOARD;
+					input.ki.wVk = m_p2Keys[GameInputFlagToGameInput(_gameInputFlag)];
+					input.ki.dwFlags = KEYEVENTF_KEYUP;
+					s_inputs.push_back(input);
+				}
+			};
+			handleInput(GameInputFlags_Up);
+			handleInput(GameInputFlags_Down);
+			handleInput(GameInputFlags_Left);
+			handleInput(GameInputFlags_Right);
+			handleInput(GameInputFlags_LP);
+			handleInput(GameInputFlags_MP);
+			handleInput(GameInputFlags_HP);
+			handleInput(GameInputFlags_LK);
+			handleInput(GameInputFlags_MK);
+			handleInput(GameInputFlags_HK);
+
+			UINT result = SendInput(s_inputs.size(), s_inputs.data(), sizeof(INPUT));
+		}
+
+		++(it->currentFrame);
+
+		if (it->currentFrame == it->sequence.size() + 1)
+		{
+			it = m_pendingP2InputSequences.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
 }
 
 void TrainingApplication::_drawMemoryMap()
@@ -1848,7 +2156,7 @@ void TrainingApplication::_drawMemoryMap()
 		if (m_isRightMouseDraggingMemoryMap)
 		{
 			ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
-			float t = mouseDelta.y / size.y;
+			float t = -mouseDelta.y / size.y;
 			if (t != 0.f)
 			{
 				size_t delta = size_t(float(addressRange) * t);

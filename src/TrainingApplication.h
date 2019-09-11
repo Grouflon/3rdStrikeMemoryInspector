@@ -129,6 +129,19 @@ struct MemoryLabel
 	);
 };
 
+struct SnapshotComparisonCondition
+{
+	int leftSnaphsot = -1;
+	bool shouldMatch = false;
+	int rightSnaphsot = -1;
+};
+
+enum SnapshotComparisonOperator
+{
+	SnapshotComparisonOperator_And = 0,
+	SnapshotComparisonOperator_Or,
+};
+
 struct GameObjectData
 {
 	size_t address = 0;
@@ -215,6 +228,19 @@ private:
 	void _clearMemorySnapshots();
 	void _resetMemoryBuffer();
 
+	void _updateValidHighlightConditions();
+	bool _checkHighlightCondition(size_t _address);
+
+	void _queueP2InputSequence(uint16_t* _sequence, size_t _sequenceSize);
+	void _processPendingP2InputSequences();
+
+	struct InputSequence
+	{
+		std::vector<uint16_t> sequence;
+		size_t currentFrame = 0;
+	};
+	std::vector<InputSequence> m_pendingP2InputSequences;
+
 	HWND m_windowHandle = nullptr;
 
 	bool m_isDettachRequested = false;
@@ -252,6 +278,7 @@ private:
 
 	// GAME DATA
 	bool m_isInMatch = false;
+	bool m_P2IsFacingRight = 0;
 
 	// MEMORY RECORDER
 	bool m_isMemorySnapshotRequested = false;
@@ -266,6 +293,10 @@ private:
 	std::vector<std::tuple<int, int>> m_memoryVariableZones;
 	std::vector<int> m_skipDifferencesList;
 	std::vector<int> m_checkDifferencesList;
+
+	std::vector<SnapshotComparisonCondition> m_snapshotComparisonConditions;
+	std::vector<SnapshotComparisonOperator> m_snapshotComparisonOperators;
+	std::vector<int> m_validSnapshotComparisonConditions;
 
 	size_t m_lastMemoryRowCount = ADDRESS_UNDEFINED;
 };
