@@ -486,7 +486,7 @@ void TrainingApplication::update()
 			}
 		}
 
-		_processPendingP2InputSequences();
+		//_processPendingP2InputSequences();
 
 		if (ImGui::BeginTabBar("MyTabBar", ImGuiTabBarFlags_Reorderable))
 		{
@@ -928,6 +928,8 @@ bool TrainingApplication::_findFBAProcessHandle()
 	processes = Process::GetProcessesByName("ggpofba");
 	if (processes->Length == 0)
 		processes = Process::GetProcessesByName("ggpofba-ng");
+	if (processes->Length == 0)
+		processes = Process::GetProcessesByName("fcadefbneo");
 
 	m_FBAProcess = nullptr;
 
